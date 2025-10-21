@@ -1,0 +1,8 @@
+### Health Check
+GET http://localhost:8080/api/health
+
+### Test 404 Error
+GET http://localhost:8080/api/nonexistent
+
+### Root Endpoint
+GET http://localhost:8080/
