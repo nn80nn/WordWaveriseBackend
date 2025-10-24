@@ -34,9 +34,7 @@ fun Route.savedWordsRoutes() {
                     ?: throw Exception("Failed to save word")
 
                 call.respond(
-                    ApiResponse.success(
-                        mapOf("success" to true, "word" to savedWord.toDTO())
-                    )
+                    ApiResponse.success(savedWord.toDTO())
                 )
             }
 
@@ -65,11 +63,7 @@ fun Route.savedWordsRoutes() {
                     throw NotFoundException("Word not found in saved words")
                 }
 
-                call.respond(
-                    ApiResponse.success(
-                        mapOf("success" to true, "message" to "Word removed from saved words")
-                    )
-                )
+                call.respond(HttpStatusCode.OK)
             }
         }
     }
