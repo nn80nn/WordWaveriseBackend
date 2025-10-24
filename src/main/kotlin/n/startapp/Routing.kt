@@ -8,6 +8,8 @@ import io.ktor.server.routing.*
 import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
 import n.startapp.models.HealthStatus
+import n.startapp.routes.authRoutes
+import n.startapp.routes.savedWordsRoutes
 import n.startapp.services.DictionaryService
 
 fun Application.configureRouting() {
@@ -38,5 +40,11 @@ fun Application.configureRouting() {
             val result = dictionaryService.searchWord(query)
             call.respond(ApiResponse.success(result))
         }
+
+        // Auth routes
+        authRoutes()
+
+        // Saved words routes (protected)
+        savedWordsRoutes()
     }
 }
