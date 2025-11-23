@@ -91,3 +91,22 @@ data class ReviewResponse(
 data class CreateFlashcardRequest(
     val savedWordId: Int
 )
+
+/**
+ * Request to create a flashcard directly without saved word
+ */
+@Serializable
+data class CreateFlashcardDirectRequest(
+    val word: String,
+    val translation: String,
+    val definition: String? = null,
+    val example: String? = null
+)
+
+/**
+ * Request to update flashcard progress
+ */
+@Serializable
+data class UpdateFlashcardProgressRequest(
+    val difficulty: ReviewDifficulty
+)

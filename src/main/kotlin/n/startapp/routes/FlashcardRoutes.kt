@@ -9,8 +9,10 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
+import n.startapp.models.flashcard.CreateFlashcardDirectRequest
 import n.startapp.models.flashcard.CreateFlashcardRequest
 import n.startapp.models.flashcard.ReviewRequest
+import n.startapp.models.flashcard.UpdateFlashcardProgressRequest
 import n.startapp.services.FlashcardService
 
 /**
@@ -21,6 +23,43 @@ fun Route.flashcardRoutes() {
 
     authenticate {
         route("/api/flashcards") {
+
+            // POST /api/flashcards - Create flashcard directly
+            post {
+                val principal = call.principal<JWTPrincipal>()
+                    ?: throw BadRequestException("Invalid authentication token")
+
+                val userId = principal.payload.getClaim("userId").asInt()
+                val request = call.receive<CreateFlashcardDirectRequest>()
+
+                if (request.word.isBlank()) {
+                    throw BadRequestException("Word cannot be empty")
+                }
+                if (request.translation.isBlank()) {
+                    throw BadRequestException("Translation cannot be empty")
+                }
+
+                val flashcard = flashcardService.createFlashcardDirect(
+                    userId = userId,
+                    word = request.word.trim(),
+                    translation = request.translation.trim(),
+                    definition = request.definition?.trim(),
+                    example = request.example?.trim()
+                )
+
+                call.respond(HttpStatusCode.Created, ApiResponse.success(flashcard))
+            }
+
+            // GET /api/flashcards - Get all flashcards
+            get {
+                val principal = call.principal<JWTPrincipal>()
+                    ?: throw BadRequestException("Invalid authentication token")
+
+                val userId = principal.payload.getClaim("userId").asInt()
+
+                val flashcards = flashcardService.getAllFlashcards(userId)
+                call.respond(ApiResponse.success(flashcards))
+            }
 
             // GET /api/flashcards/due - Get all flashcards due for review
             get("/due") {
@@ -33,7 +72,22 @@ fun Route.flashcardRoutes() {
                 call.respond(ApiResponse.success(response))
             }
 
-            // POST /api/flashcards/review - Review a flashcard
+            // PUT /api/flashcards/{id} - Update flashcard progress
+            put("/{id}") {
+                val principal = call.principal<JWTPrincipal>()
+                    ?: throw BadRequestException("Invalid authentication token")
+
+                val userId = principal.payload.getClaim("userId").asInt()
+                val cardId = call.parameters["id"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid flashcard ID")
+                val request = call.receive<UpdateFlashcardProgressRequest>()
+
+                val reviewRequest = ReviewRequest(cardId, request.difficulty)
+                val response = flashcardService.reviewFlashcard(userId, reviewRequest)
+                call.respond(ApiResponse.success(response))
+            }
+
+            // POST /api/flashcards/review - Review a flashcard (alternative endpoint)
             post("/review") {
                 val principal = call.principal<JWTPrincipal>()
                     ?: throw BadRequestException("Invalid authentication token")
@@ -55,17 +109,6 @@ fun Route.flashcardRoutes() {
 
                 val flashcard = flashcardService.createFlashcard(userId, request.savedWordId)
                 call.respond(HttpStatusCode.Created, ApiResponse.success(flashcard))
-            }
-
-            // GET /api/flashcards - Get all flashcards
-            get {
-                val principal = call.principal<JWTPrincipal>()
-                    ?: throw BadRequestException("Invalid authentication token")
-
-                val userId = principal.payload.getClaim("userId").asInt()
-
-                val flashcards = flashcardService.getAllFlashcards(userId)
-                call.respond(ApiResponse.success(flashcards))
             }
 
             // GET /api/flashcards/statistics - Get flashcard statistics

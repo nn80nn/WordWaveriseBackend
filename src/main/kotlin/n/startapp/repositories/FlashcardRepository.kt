@@ -15,6 +15,38 @@ import java.time.Instant
 class FlashcardRepository {
 
     /**
+     * Create a flashcard directly
+     */
+    suspend fun create(
+        userId: Int,
+        word: String,
+        translation: String,
+        definition: String?,
+        example: String?
+    ): Flashcard = dbQuery {
+        val now = Instant.now()
+        val id = Flashcards.insertAndGetId {
+            it[Flashcards.userId] = userId
+            it[savedWordId] = null
+            it[Flashcards.word] = word
+            it[Flashcards.translation] = translation
+            it[Flashcards.definition] = definition
+            it[Flashcards.example] = example
+            it[easeFactor] = 2.5f
+            it[repetitions] = 0
+            it[interval] = 0
+            it[nextReview] = now // Due immediately
+            it[lastReviewed] = null
+            it[createdAt] = now
+            it[updatedAt] = now
+        }
+
+        Flashcards.select { Flashcards.id eq id }
+            .first()
+            .let { rowToFlashcard(it) }
+    }
+
+    /**
      * Create a flashcard from a saved word
      */
     suspend fun createFromSavedWord(userId: Int, savedWordId: Int): Flashcard? = dbQuery {

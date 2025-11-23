@@ -16,6 +16,29 @@ class FlashcardService {
     private val repository = FlashcardRepository()
 
     /**
+     * Create a flashcard directly
+     */
+    suspend fun createFlashcardDirect(
+        userId: Int,
+        word: String,
+        translation: String,
+        definition: String?,
+        example: String?
+    ): FlashcardDto {
+        logger.info("Creating flashcard directly for user $userId: word='$word'")
+
+        val flashcard = repository.create(
+            userId = userId,
+            word = word,
+            translation = translation,
+            definition = definition,
+            example = example
+        )
+
+        return flashcardToDto(flashcard)
+    }
+
+    /**
      * Create a flashcard from a saved word
      */
     suspend fun createFlashcard(userId: Int, savedWordId: Int): FlashcardDto {

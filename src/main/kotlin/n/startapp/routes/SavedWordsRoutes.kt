@@ -21,7 +21,59 @@ fun Route.savedWordsRoutes() {
 
     authenticate("auth-jwt") {
         route("/api/words") {
-            // Save a word
+            // Save a word - supports both /save and /saved endpoints
+            route("/saved") {
+                post {
+                    val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                    val request = call.receive<SaveWordRequest>()
+
+                    if (request.word.isBlank()) {
+                        throw BadRequestException("Word cannot be empty")
+                    }
+
+                    val savedWord = savedWordRepository.save(
+                        userId = userId,
+                        word = request.word.trim().lowercase(),
+                        translation = request.translation,
+                        definition = request.definition
+                    ) ?: throw Exception("Failed to save word")
+
+                    call.respond(
+                        HttpStatusCode.Created,
+                        ApiResponse.success(savedWord.toDTO())
+                    )
+                }
+
+                // Get all saved words
+                get {
+                    val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+
+                    val savedWords = savedWordRepository.findByUserId(userId)
+                    call.respond(
+                        ApiResponse.success(
+                            SavedWordsResponse(
+                                words = savedWords.map { it.toDTO() }
+                            )
+                        )
+                    )
+                }
+
+                // Delete a saved word
+                delete("/{word}") {
+                    val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                    val word = call.parameters["word"]?.trim()?.lowercase()
+                        ?: throw BadRequestException("Word parameter is required")
+
+                    val deleted = savedWordRepository.delete(userId, word)
+                    if (!deleted) {
+                        throw NotFoundException("Word not found in saved words")
+                    }
+
+                    call.respond(ApiResponse.success("Word deleted successfully"))
+                }
+            }
+
+            // Legacy endpoint for backward compatibility
             post("/save") {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                 val request = call.receive<SaveWordRequest>()
@@ -42,33 +94,6 @@ fun Route.savedWordsRoutes() {
                 )
             }
 
-            // Get all saved words
-            get("/saved") {
-                val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
-
-                val savedWords = savedWordRepository.findByUserId(userId)
-                call.respond(
-                    ApiResponse.success(
-                        SavedWordsResponse(
-                            words = savedWords.map { it.toDTO() }
-                        )
-                    )
-                )
-            }
-
-            // Delete a saved word
-            delete("/saved/{word}") {
-                val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
-                val word = call.parameters["word"]?.trim()?.lowercase()
-                    ?: throw BadRequestException("Word parameter is required")
-
-                val deleted = savedWordRepository.delete(userId, word)
-                if (!deleted) {
-                    throw NotFoundException("Word not found in saved words")
-                }
-
-                call.respond(HttpStatusCode.OK)
-            }
         }
     }
 }
