@@ -18,13 +18,15 @@ class SavedWordRepository {
         id = row[SavedWords.id],
         userId = row[SavedWords.userId],
         word = row[SavedWords.word],
+        translation = row[SavedWords.translation],
+        definition = row[SavedWords.definition],
         savedAt = row[SavedWords.savedAt]
     )
 
     /**
      * Save a word for a user
      */
-    suspend fun save(userId: Int, word: String): SavedWord? = dbQuery {
+    suspend fun save(userId: Int, word: String, translation: String? = null, definition: String? = null): SavedWord? = dbQuery {
         // Check if word already saved
         val existing = SavedWords.selectAll()
             .where { (SavedWords.userId eq userId) and (SavedWords.word eq word) }
@@ -38,6 +40,8 @@ class SavedWordRepository {
             val insertStatement = SavedWords.insert {
                 it[SavedWords.userId] = userId
                 it[SavedWords.word] = word
+                it[SavedWords.translation] = translation
+                it[SavedWords.definition] = definition
             }
             insertStatement.resultedValues?.singleOrNull()?.let(::resultRowToSavedWord)
         }

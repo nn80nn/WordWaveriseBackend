@@ -11,6 +11,8 @@ object SavedWords : Table("saved_words") {
     val id = integer("id").autoIncrement()
     val userId = integer("user_id").references(Users.id)
     val word = varchar("word", 255)
+    val translation = varchar("translation", 500).nullable()
+    val definition = text("definition").nullable()
     val savedAt = timestamp("saved_at").clientDefault { Instant.now() }
 
     override val primaryKey = PrimaryKey(id)

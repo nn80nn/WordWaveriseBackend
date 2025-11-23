@@ -9,6 +9,7 @@ import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
 import n.startapp.models.HealthStatus
 import n.startapp.routes.authRoutes
+import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.services.DictionaryService
 
@@ -84,5 +85,8 @@ fun Application.configureRouting() {
 
         // Saved words routes (protected)
         savedWordsRoutes()
+
+        // Flashcard routes (protected)
+        flashcardRoutes()
     }
 }

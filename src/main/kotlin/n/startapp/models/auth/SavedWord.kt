@@ -10,6 +10,8 @@ data class SavedWord(
     val id: Int,
     val userId: Int,
     val word: String,
+    val translation: String?,
+    val definition: String?,
     val savedAt: Instant
 )
 
@@ -20,6 +22,8 @@ data class SavedWord(
 data class SavedWordDTO(
     val id: Int,
     val word: String,
+    val translation: String?,
+    val definition: String?,
     val savedAt: String
 )
 
@@ -28,7 +32,9 @@ data class SavedWordDTO(
  */
 @Serializable
 data class SaveWordRequest(
-    val word: String
+    val word: String,
+    val translation: String? = null,
+    val definition: String? = null
 )
 
 /**
@@ -45,5 +51,7 @@ data class SavedWordsResponse(
 fun SavedWord.toDTO(): SavedWordDTO = SavedWordDTO(
     id = id,
     word = word,
+    translation = translation,
+    definition = definition,
     savedAt = savedAt.toString()
 )

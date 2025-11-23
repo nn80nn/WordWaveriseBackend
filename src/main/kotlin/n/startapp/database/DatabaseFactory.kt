@@ -3,6 +3,7 @@ package n.startapp.database
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
+import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.Users
 import n.startapp.utils.EnvConfig
@@ -48,7 +49,7 @@ object DatabaseFactory {
             // Create tables if they don't exist
             transaction {
                 println("📋 Creating database tables if they don't exist...")
-                SchemaUtils.create(Users, SavedWords)
+                SchemaUtils.create(Users, SavedWords, Flashcards)
                 println("✅ Database tables ready")
             }
         } catch (e: Exception) {

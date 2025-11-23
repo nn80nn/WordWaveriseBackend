@@ -30,8 +30,12 @@ fun Route.savedWordsRoutes() {
                     throw BadRequestException("Word cannot be empty")
                 }
 
-                val savedWord = savedWordRepository.save(userId, request.word.trim().lowercase())
-                    ?: throw Exception("Failed to save word")
+                val savedWord = savedWordRepository.save(
+                    userId = userId,
+                    word = request.word.trim().lowercase(),
+                    translation = request.translation,
+                    definition = request.definition
+                ) ?: throw Exception("Failed to save word")
 
                 call.respond(
                     ApiResponse.success(savedWord.toDTO())
