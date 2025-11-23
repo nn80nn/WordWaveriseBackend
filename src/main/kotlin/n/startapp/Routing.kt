@@ -20,12 +20,21 @@ fun Application.configureRouting() {
             call.respondText("Hello World!")
         }
 
-        get("/api/health") {
-            val healthStatus = HealthStatus(
-                status = "ok",
-                version = "1.0.0"
-            )
-            call.respond(ApiResponse.success(healthStatus))
+        // Health check endpoint - supports both GET and HEAD methods
+        route("/api/health") {
+            get {
+                val healthStatus = HealthStatus(
+                    status = "ok",
+                    version = "1.0.0"
+                )
+                call.respond(ApiResponse.success(healthStatus))
+            }
+
+            head {
+                // HEAD request - return only headers, no body
+                // Used by monitoring services like UptimeRobot
+                call.respond(HttpStatusCode.OK)
+            }
         }
 
         // Word search endpoint
