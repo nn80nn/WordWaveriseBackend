@@ -1,19 +1,23 @@
 # Multi-stage Dockerfile for WordWaveriseBackend
 
 # Stage 1: Build
-FROM gradle:8.10-jdk11 AS builder
+FROM gradle:8.11-jdk11 AS builder
 
 WORKDIR /app
 
+# Copy Gradle wrapper
+COPY gradle ./gradle
+COPY gradlew ./
+COPY gradlew.bat ./
+
 # Copy Gradle files
 COPY build.gradle.kts settings.gradle.kts gradle.properties ./
-COPY gradle ./gradle
 
 # Copy source code
 COPY src ./src
 
-# Build the application
-RUN gradle buildFatJar --no-daemon
+# Make gradlew executable and build the application
+RUN chmod +x ./gradlew && ./gradlew buildFatJar --no-daemon
 
 # Stage 2: Runtime
 FROM eclipse-temurin:11-jre-alpine
