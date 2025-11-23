@@ -60,6 +60,9 @@ dependencies {
     // BCrypt for password hashing
     implementation("at.favre.lib:bcrypt:$bcrypt_version")
 
+    // Caffeine cache for in-memory caching
+    implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
+
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 }

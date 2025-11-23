@@ -11,16 +11,16 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
 import n.startapp.exceptions.NotFoundException
-import n.startapp.models.dictionary.Definition
-import n.startapp.models.dictionary.DictionaryApiResponse
-import n.startapp.models.dictionary.TranslationApiResponse
-import n.startapp.models.dictionary.WordSearchResponse
+import n.startapp.models.dictionary.*
+import n.startapp.services.cache.CacheService
+import n.startapp.services.dictionary.DictionaryAggregationService
+import org.slf4j.LoggerFactory
 
 /**
- * Service for interacting with external dictionary API
+ * Enhanced service for dictionary lookups with multi-source aggregation and caching
  */
 class DictionaryService {
-    private val apiBaseUrl = "https://api.dictionaryapi.dev/api/v2/entries/en"
+    private val logger = LoggerFactory.getLogger(DictionaryService::class.java)
     private val translationApiUrl = "https://api.mymemory.translated.net/get"
 
     private val httpClient = HttpClient(CIO) {
@@ -42,36 +42,61 @@ class DictionaryService {
         }
     }
 
+    private val aggregationService = DictionaryAggregationService()
+    private val cacheService = CacheService()
+
     /**
-     * Search for word definitions
+     * Search for word with enhanced details from multiple sources
+     * Results are cached for 24 hours to reduce API load
      * @param word The word to search for
-     * @return WordSearchResponse containing definitions and phonetics
+     * @return WordDetailResponse with aggregated data
      * @throws NotFoundException if word is not found
      */
-    suspend fun searchWord(word: String): WordSearchResponse {
-        try {
-            val response = httpClient.get("$apiBaseUrl/${word.trim()}") {
-                contentType(ContentType.Application.Json)
-            }
+    suspend fun searchWordEnhanced(word: String): WordDetailResponse {
+        val normalizedWord = word.trim().lowercase()
 
-            if (response.status == HttpStatusCode.NotFound) {
-                throw NotFoundException("Word '$word' not found in dictionary")
-            }
-
-            // API returns a list with single element for English words
-            val apiResponses = response.body<List<DictionaryApiResponse>>()
-            val apiResponse = apiResponses.firstOrNull()
-                ?: throw NotFoundException("Word '$word' not found in dictionary")
-
-            // Get Russian translation
-            val translation = getTranslation(word.trim())
-
-            return parseApiResponse(apiResponse, translation)
-        } catch (e: NotFoundException) {
-            throw e
-        } catch (e: Exception) {
-            throw Exception("Error fetching word definition: ${e.message}", e)
+        // Check cache first
+        cacheService.getWord(normalizedWord)?.let { cached ->
+            logger.info("Returning cached result for word: '$word'")
+            return cached
         }
+
+        // Fetch from multiple sources in parallel
+        logger.info("Fetching word '$word' from multiple sources")
+        val aggregatedData = aggregationService.aggregateWordData(normalizedWord)
+
+        // Add Russian translation
+        val translation = getTranslation(normalizedWord)
+        val finalResult = aggregatedData.copy(translation = translation)
+
+        // Cache the result
+        cacheService.putWord(normalizedWord, finalResult)
+
+        return finalResult
+    }
+
+    /**
+     * Legacy search method for backward compatibility
+     * Converts new format to old format
+     */
+    suspend fun searchWord(word: String): WordSearchResponse {
+        val enhanced = searchWordEnhanced(word)
+
+        return WordSearchResponse(
+            word = enhanced.word,
+            phonetic = enhanced.phonetic,
+            audioUrl = enhanced.audioUrl,
+            translation = enhanced.translation,
+            definitions = enhanced.definitions.map { def ->
+                Definition(
+                    partOfSpeech = def.partOfSpeech,
+                    definition = def.definition,
+                    example = def.example,
+                    synonyms = enhanced.synonyms.take(5),
+                    antonyms = enhanced.antonyms.take(5)
+                )
+            }
+        )
     }
 
     /**
@@ -93,47 +118,26 @@ class DictionaryService {
                 null
             }
         } catch (e: Exception) {
-            // If translation fails, just return null and continue with English definitions
+            logger.debug("Translation failed for '$word': ${e.message}")
             null
         }
     }
 
     /**
-     * Parse API response to client-facing model
+     * Get cache statistics
      */
-    private fun parseApiResponse(apiResponse: DictionaryApiResponse, translation: String?): WordSearchResponse {
-        // Get the first available phonetic text
-        val phonetic = apiResponse.phonetics.firstOrNull { it.text != null }?.text
+    fun getCacheStats() = cacheService.getStats()
 
-        // Get the first audio URL if available
-        val audioUrl = apiResponse.phonetics.firstOrNull { !it.audio.isNullOrBlank() }?.audio
-
-        // Flatten all definitions from all meanings
-        val definitions = apiResponse.meanings.flatMap { meaning ->
-            meaning.definitions.map { def ->
-                Definition(
-                    partOfSpeech = meaning.partOfSpeech,
-                    definition = def.definition,
-                    example = def.example,
-                    synonyms = def.synonyms.take(5), // Limit to 5 synonyms
-                    antonyms = def.antonyms.take(5)  // Limit to 5 antonyms
-                )
-            }
-        }
-
-        return WordSearchResponse(
-            word = apiResponse.word,
-            phonetic = phonetic,
-            audioUrl = audioUrl,
-            translation = translation,
-            definitions = definitions
-        )
-    }
+    /**
+     * Clear cache
+     */
+    fun clearCache() = cacheService.clearAll()
 
     /**
      * Close the HTTP client when done
      */
     fun close() {
         httpClient.close()
+        aggregationService.close()
     }
 }

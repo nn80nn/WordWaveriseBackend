@@ -37,17 +37,46 @@ fun Application.configureRouting() {
             }
         }
 
-        // Word search endpoint
-        get("/api/words/search") {
-            val query = call.request.queryParameters["query"]
-                ?: throw BadRequestException("Query parameter 'query' is required")
+        // Word search endpoints
+        route("/api/words") {
+            // Legacy endpoint for backward compatibility
+            get("/search") {
+                val query = call.request.queryParameters["query"]
+                    ?: throw BadRequestException("Query parameter 'query' is required")
 
-            if (query.isBlank()) {
-                throw BadRequestException("Query parameter 'query' cannot be empty")
+                if (query.isBlank()) {
+                    throw BadRequestException("Query parameter 'query' cannot be empty")
+                }
+
+                val result = dictionaryService.searchWord(query)
+                call.respond(ApiResponse.success(result))
             }
 
-            val result = dictionaryService.searchWord(query)
-            call.respond(ApiResponse.success(result))
+            // Enhanced endpoint with multi-source aggregation
+            get("/details") {
+                val query = call.request.queryParameters["query"]
+                    ?: throw BadRequestException("Query parameter 'query' is required")
+
+                if (query.isBlank()) {
+                    throw BadRequestException("Query parameter 'query' cannot be empty")
+                }
+
+                val result = dictionaryService.searchWordEnhanced(query)
+                call.respond(ApiResponse.success(result))
+            }
+        }
+
+        // Cache management endpoints
+        route("/api/cache") {
+            get("/stats") {
+                val stats = dictionaryService.getCacheStats()
+                call.respond(ApiResponse.success(stats))
+            }
+
+            post("/clear") {
+                dictionaryService.clearCache()
+                call.respond(ApiResponse.success("Cache cleared successfully"))
+            }
         }
 
         // Auth routes
