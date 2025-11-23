@@ -37,3 +37,9 @@ out/
 
 ### Environment Variables ###
 .env
+.env.local
+.env.production
+# Keep .env.example and .env.dokploy as templates
+
+### Temporary Files ###
+nul

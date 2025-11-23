@@ -1,0 +1,98 @@
+# Dokploy Configuration for WordWaveriseBackend
+# This file configures automatic deployment with Dokploy
+
+version: "1.0"
+
+# Application settings
+app:
+  name: wordwaverise-backend
+  type: docker-compose
+
+  # Git configuration
+  repository:
+    source: github
+    branch: master
+    # Dokploy will auto-detect the repository URL from Git
+
+  # Build configuration
+  build:
+    dockerfile: Dockerfile
+    context: .
+    args: []
+
+  # Environment variables (will be set in Dokploy UI)
+  # These are references - actual values set in Dokploy dashboard
+  env:
+    - DB_URL=${DB_URL}
+    - DB_USER=${DB_USER}
+    - DB_PASSWORD=${DB_PASSWORD}
+    - DB_DRIVER=org.postgresql.Driver
+    - JWT_SECRET=${JWT_SECRET}
+    - JWT_ISSUER=wordwaverise-backend
+    - JWT_AUDIENCE=wordwaverise-app
+    - JWT_REALM=Access to WordWaverise API
+    - JWT_EXPIRATION_HOURS=720
+    - APP_ENV=production
+
+  # Health check
+  healthcheck:
+    path: /api/health
+    port: 8080
+    interval: 30s
+    timeout: 10s
+    retries: 3
+
+  # Deployment settings
+  deployment:
+    # Auto-deploy on push to master branch
+    auto_deploy: true
+    # Number of replicas (for scaling)
+    replicas: 1
+    # Deployment strategy
+    strategy: rolling
+
+  # Port mapping
+  ports:
+    - container: 8080
+      host: 8080
+      protocol: tcp
+
+  # Resource limits (optional - adjust based on your server)
+  resources:
+    limits:
+      memory: 512M
+      cpu: 1.0
+    reservations:
+      memory: 256M
+      cpu: 0.5
+
+  # Volumes for database persistence
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
+
+  # Network configuration
+  network:
+    mode: bridge
+
+# Database service (PostgreSQL)
+services:
+  - name: wordwaverise-db
+    image: postgres:16-alpine
+    env:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Domains (configure in Dokploy UI)
+# domains:
+#   - name: api.wordwaverise.com
+#     port: 8080
+#     ssl: true
+#     redirect_www: false

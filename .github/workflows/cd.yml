@@ -1,0 +1,112 @@
+name: CD
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:  # Allows manual trigger
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-deploy:
+    name: Build, Test and Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Build with Gradle
+      run: ./gradlew build --no-daemon
+
+    - name: Run tests
+      run: ./gradlew test --no-daemon
+
+    - name: Build Fat JAR
+      run: ./gradlew buildFatJar --no-daemon
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image using Ktor plugin
+      run: ./gradlew buildImage --no-daemon
+
+    - name: Tag and Push Docker image
+      run: |
+        IMAGE_ID=$(docker images -q n.startapp/wordwaverisebackend:0.0.1 | head -n 1)
+        if [ -z "$IMAGE_ID" ]; then
+          echo "Error: Docker image not found"
+          exit 1
+        fi
+
+        echo "Found image: $IMAGE_ID"
+
+        # Tag with all metadata tags
+        IFS=',' read -ra TAGS <<< "${{ steps.meta.outputs.tags }}"
+        for tag in "${TAGS[@]}"; do
+          echo "Tagging as: $tag"
+          docker tag $IMAGE_ID $tag
+          echo "Pushing: $tag"
+          docker push $tag
+        done
+
+    - name: Upload Fat JAR artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wordwaverisebackend-jar
+        path: build/libs/*-all.jar
+        retention-days: 30
+
+  # Uncomment and configure when ready to deploy to a server
+  # deploy:
+  #   name: Deploy to Server
+  #   needs: build-and-deploy
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/master'
+  #
+  #   steps:
+  #   - name: Deploy to production server
+  #     uses: appleboy/ssh-action@v1.0.0
+  #     with:
+  #       host: ${{ secrets.DEPLOY_HOST }}
+  #       username: ${{ secrets.DEPLOY_USER }}
+  #       key: ${{ secrets.DEPLOY_KEY }}
+  #       script: |
+  #         cd /path/to/app
+  #         docker-compose pull
+  #         docker-compose up -d
+  #         docker system prune -f
