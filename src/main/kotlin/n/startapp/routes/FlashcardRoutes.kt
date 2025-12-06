@@ -21,7 +21,7 @@ import n.startapp.services.FlashcardService
 fun Route.flashcardRoutes() {
     val flashcardService = FlashcardService()
 
-    authenticate {
+    authenticate("auth-jwt") {
         route("/api/flashcards") {
 
             // POST /api/flashcards - Create flashcard directly
