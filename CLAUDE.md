@@ -122,5 +122,8 @@ Key dependencies managed in `build.gradle.kts`:
 
 ## Important Notes
 
-- **CORS Configuration**: Currently allows all hosts (`anyHost()` in HTTP.kt). This should be restricted to specific domains in production.
+- **CORS Configuration**: Configured to allow requests from `http://localhost:5173` (Vite/React default dev server) and `http://127.0.0.1:5173`. For production, uncomment and configure production domains in HTTP.kt. The configuration includes:
+  - Allowed methods: GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD
+  - Allowed headers: Authorization, Content-Type, Accept
+  - Credentials support enabled for JWT authentication
 - The server uses YAML configuration loaded from `application.yaml` to bootstrap the application module
