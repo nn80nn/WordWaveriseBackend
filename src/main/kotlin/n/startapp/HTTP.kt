@@ -34,9 +34,10 @@ fun Application.configureHTTP() {
         // Для мобильного доступа в локальной сети (опционально)
         // allowHost("192.168.1.100:5173", schemes = listOf("http"))
 
-        // Production frontend (раскомментировать и настроить для production)
-        // allowHost("yourdomain.com", schemes = listOf("https"))
-        // allowHost("www.yourdomain.com", schemes = listOf("https"))
+        // Production frontend
+        allowHost("wordwaverise.com", schemes = listOf("https"))
+        allowHost("www.wordwaverise.com", schemes = listOf("https"))
+        allowHost("app.wordwaverise.com", schemes = listOf("https"))
 
         // Для тестирования можно временно разрешить все хосты
         // anyHost() // WARNING: Remove in production!
