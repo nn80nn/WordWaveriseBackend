@@ -11,6 +11,7 @@ data class WordSearchResponse(
     val word: String,
     val phonetic: String?,
     val audioUrl: String?,
+    val pronunciations: List<PronunciationEntry> = emptyList(),
     val translation: String?, // Russian translation
     val definitions: List<Definition>
 )

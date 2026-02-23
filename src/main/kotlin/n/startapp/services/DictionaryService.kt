@@ -86,6 +86,7 @@ class DictionaryService {
             word = enhanced.word,
             phonetic = enhanced.phonetic,
             audioUrl = enhanced.audioUrl,
+            pronunciations = enhanced.pronunciations,
             translation = enhanced.translation,
             definitions = enhanced.definitions.map { def ->
                 Definition(
