@@ -93,7 +93,8 @@ class DictionaryService {
                     definition = def.definition,
                     example = def.example,
                     synonyms = enhanced.synonyms.take(5),
-                    antonyms = enhanced.antonyms.take(5)
+                    antonyms = enhanced.antonyms.take(5),
+                    source = def.source
                 )
             }
         )
