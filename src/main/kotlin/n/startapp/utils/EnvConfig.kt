@@ -60,4 +60,8 @@ object EnvConfig {
     val jwtAudience: String get() = get("JWT_AUDIENCE", "wordwaverise-app")
     val jwtRealm: String get() = get("JWT_REALM", "Access to WordWaverise API")
     val jwtExpirationHours: Int get() = getInt("JWT_EXPIRATION_HOURS", 720)
+
+    // AI configuration
+    val aiDomen: String get() = get("AI_DOMEN", "")
+    val aiApiKey: String get() = get("AI_API", "")
 }

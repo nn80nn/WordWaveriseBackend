@@ -8,15 +8,18 @@ import io.ktor.server.routing.*
 import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
 import n.startapp.models.HealthStatus
+import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.savedWordsRoutes
+import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
 import n.startapp.services.SuggestService
 
 fun Application.configureRouting() {
     val dictionaryService = DictionaryService()
     val suggestService = SuggestService()
+    val aiService = AiService()
 
     routing {
         get("/") {
@@ -104,4 +107,7 @@ fun Application.configureRouting() {
         // Flashcard routes (protected)
         flashcardRoutes()
     }
+
+    // AI routes (protected)
+    aiRoutes(aiService)
 }
