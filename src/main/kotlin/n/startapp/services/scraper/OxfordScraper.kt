@@ -89,23 +89,24 @@ class OxfordScraper(private val httpClient: HttpClient) {
 
     // ── HTML parsing ─────────────────────────────────────────────────────────
 
-    private fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
+    internal fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
         val doc = Jsoup.parse(html)
 
         // ── Pronunciations ────────────────────────────────────────────────
         val pronunciations = mutableListOf<ScrapedPronunciation>()
 
-        // BrE IPA: span.phons_br span.phon
-        val brIpa = doc.select("span.phons_br span.phon").firstOrNull()
-            ?.text()?.trim()?.let { "/$it/" }
-        // NAmE IPA: span.phons_n_am span.phon
-        val amIpa = doc.select("span.phons_n_am span.phon").firstOrNull()
-            ?.text()?.trim()?.let { "/$it/" }
+        // BrE IPA: .phons_br span.phon  (OALD uses div.phons_br, not span)
+        // span.phon text already contains slashes (e.g. "/ˈpleɪɡraʊnd/"), don't double-wrap
+        val brIpa = doc.select(".phons_br span.phon").firstOrNull()
+            ?.text()?.trim()?.let { ipa -> if (ipa.startsWith("/")) ipa else "/$ipa/" }
+        // NAmE IPA: .phons_n_am span.phon
+        val amIpa = doc.select(".phons_n_am span.phon").firstOrNull()
+            ?.text()?.trim()?.let { ipa -> if (ipa.startsWith("/")) ipa else "/$ipa/" }
 
-        // Audio: OALD stores MP3 URLs in data-src-mp3 on pron-gs elements
-        val brMp3 = doc.select("span.phons_br [data-src-mp3]").firstOrNull()
+        // Audio: OALD stores MP3 URLs in data-src-mp3 on child elements
+        val brMp3 = doc.select(".phons_br [data-src-mp3]").firstOrNull()
             ?.attr("data-src-mp3")?.takeIf { it.isNotBlank() }
-        val amMp3 = doc.select("span.phons_n_am [data-src-mp3]").firstOrNull()
+        val amMp3 = doc.select(".phons_n_am [data-src-mp3]").firstOrNull()
             ?.attr("data-src-mp3")?.takeIf { it.isNotBlank() }
 
         if (brIpa != null || brMp3 != null)

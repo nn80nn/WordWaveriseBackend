@@ -17,7 +17,7 @@ class LdoceScraper(private val httpClient: HttpClient) {
 
     companion object {
         const val SOURCE_ID = "LDOCE"
-        const val PARSER_VERSION = "v2"
+        const val PARSER_VERSION = "v3"
         private const val BASE_URL = "https://www.ldoceonline.com"
         private const val RATE_LIMIT_MS = 1200L
         private val USER_AGENT =
@@ -85,10 +85,9 @@ class LdoceScraper(private val httpClient: HttpClient) {
             header("User-Agent", USER_AGENT)
             header("Accept-Language", "en-US,en;q=0.9")
             header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            header("Accept-Encoding", "gzip, deflate, br")
+            // NOTE: Do NOT send Accept-Encoding — Ktor CIO has no ContentEncoding plugin,
+            // so gzip responses would arrive as raw compressed bytes and break JSoup parsing.
             header("Referer", "https://www.ldoceonline.com/")
-            header("Cache-Control", "no-cache")
-            header("Connection", "keep-alive")
             // Simulate accepted GDPR/OneTrust consent to bypass cookie consent wall
             header("Cookie", "OptanonAlertBoxClosed=2024-01-01T00:00:00.000Z; OptanonConsent=isGpcEnabled=0&datestamp=Mon+Jan+01+2024&version=202401.1.0&interactionCount=2&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1")
         }
@@ -97,7 +96,7 @@ class LdoceScraper(private val httpClient: HttpClient) {
 
     // ── HTML parsing ─────────────────────────────────────────────────────────
 
-    private fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
+    internal fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
         if (html.isBlank()) return null
         val doc = Jsoup.parse(html)
 
@@ -184,7 +183,7 @@ class LdoceScraper(private val httpClient: HttpClient) {
     }
 
     /** Walk up DOM to find POS from the nearest dictentry Head. */
-    private fun Element.posFromParent(): String? {
+    internal fun Element.posFromParent(): String? {
         var el: Element? = this
         while (el != null) {
             if (el.hasClass("dictentry")) {

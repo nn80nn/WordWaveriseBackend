@@ -74,7 +74,7 @@ class CambridgeScraper(private val httpClient: HttpClient) {
 
     // ── HTML parsing ─────────────────────────────────────────────────────────
 
-    private fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
+    internal fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
         val doc = Jsoup.parse(html)
 
         // ── Pronunciations ────────────────────────────────────────────────
