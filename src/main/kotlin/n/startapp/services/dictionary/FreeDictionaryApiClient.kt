@@ -5,6 +5,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import n.startapp.models.dictionary.DictionaryApiResponse
+import n.startapp.models.dictionary.PronunciationEntry
 import n.startapp.models.dictionary.SourcedDefinition
 import n.startapp.models.dictionary.SourcedWordData
 import org.slf4j.LoggerFactory
@@ -43,6 +44,18 @@ class FreeDictionaryApiClient(private val httpClient: HttpClient) : DictionaryAp
         val phonetic = apiResponse.phonetics.firstOrNull { it.text != null }?.text
         val audioUrl = apiResponse.phonetics.firstOrNull { !it.audio.isNullOrBlank() }?.audio
 
+        // Extract UK/US pronunciations from phonetics array
+        val pronunciations = apiResponse.phonetics
+            .filter { !it.audio.isNullOrBlank() || !it.text.isNullOrBlank() }
+            .map { phonetic ->
+                val region = when {
+                    phonetic.audio?.contains("uk_pron", ignoreCase = true) == true -> "uk"
+                    phonetic.audio?.contains("us_pron", ignoreCase = true) == true -> "us"
+                    else -> null
+                }
+                PronunciationEntry(region = region, ipa = phonetic.text, audioMp3Url = phonetic.audio?.takeIf { it.isNotBlank() })
+            }
+
         val definitions = apiResponse.meanings.flatMap { meaning ->
             meaning.definitions.map { def ->
                 SourcedDefinition(
@@ -71,6 +84,7 @@ class FreeDictionaryApiClient(private val httpClient: HttpClient) : DictionaryAp
             source = sourceName,
             phonetic = phonetic,
             audioUrl = audioUrl,
+            pronunciations = pronunciations,
             definitions = definitions,
             synonyms = allSynonyms,
             antonyms = allAntonyms,

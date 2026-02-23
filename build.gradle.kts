@@ -63,6 +63,9 @@ dependencies {
     // Caffeine cache for in-memory caching
     implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
 
+    // HTML parsing for scrapers
+    implementation("org.jsoup:jsoup:1.18.3")
+
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 }

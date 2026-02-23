@@ -53,6 +53,7 @@ data class SourcedWordData(
     val source: String,
     val phonetic: String? = null,
     val audioUrl: String? = null,
+    val pronunciations: List<PronunciationEntry> = emptyList(),
     val definitions: List<SourcedDefinition> = emptyList(),
     val synonyms: Set<String> = emptySet(),
     val antonyms: Set<String> = emptySet(),

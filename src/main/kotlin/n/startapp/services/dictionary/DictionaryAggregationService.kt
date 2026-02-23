@@ -12,12 +12,17 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.Json
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.dictionary.DetailedDefinition
+import n.startapp.models.dictionary.PronunciationEntry
 import n.startapp.models.dictionary.SourcedWordData
 import n.startapp.models.dictionary.WordDetailResponse
+import n.startapp.models.scraper.ScrapeEnrichment
+import n.startapp.repositories.ScraperCacheRepository
+import n.startapp.services.scraper.ScraperService
 import org.slf4j.LoggerFactory
 
 /**
- * Service that aggregates word data from multiple dictionary APIs in parallel
+ * Aggregates word data from multiple dictionary APIs + web scrapers in parallel.
+ * Applies smart deduplication before returning the final merged response.
  */
 class DictionaryAggregationService {
     private val logger = LoggerFactory.getLogger(DictionaryAggregationService::class.java)
@@ -47,41 +52,45 @@ class DictionaryAggregationService {
         DataMuseApiClient(httpClient)
     )
 
+    private val scraperService = ScraperService(ScraperCacheRepository())
+
     /**
-     * Fetch word data from all sources in parallel and merge results
-     * @param word The word to look up
-     * @return Aggregated WordDetailResponse
+     * Fetch word data from all API sources + scrapers in parallel and merge results.
      * @throws NotFoundException if word not found in any source
      */
     suspend fun aggregateWordData(word: String): WordDetailResponse {
-        logger.info("Fetching word data for '$word' from ${apiClients.size} sources")
+        logger.info("Fetching word data for '$word' from ${apiClients.size} API sources + scrapers")
 
-        // Fetch from all sources in parallel using coroutines
-        val results = fetchFromAllSources(word)
+        // Run API clients and scrapers in parallel
+        val (apiResults, scraperResults) = coroutineScope {
+            val apis = async { fetchFromAllApiSources(word) }
+            val scrapers = async {
+                try { scraperService.enrichWord(word) }
+                catch (e: Exception) {
+                    logger.warn("Scraper enrichment failed for '$word': ${e.message}")
+                    emptyList()
+                }
+            }
+            apis.await() to scrapers.await()
+        }
 
-        // Filter out null results
-        val validResults = results.filterNotNull()
+        val validApiResults = apiResults.filterNotNull()
 
-        if (validResults.isEmpty()) {
-            logger.warn("Word '$word' not found in any dictionary source")
+        if (validApiResults.isEmpty() && scraperResults.isEmpty()) {
+            logger.warn("Word '$word' not found in any source")
             throw NotFoundException("Word '$word' not found in dictionary")
         }
 
-        logger.info("Successfully fetched word '$word' from ${validResults.size} source(s)")
+        logger.info("'$word': ${validApiResults.size} API source(s), ${scraperResults.size} scraper source(s)")
 
-        // Merge results from all sources
-        return mergeResults(word, validResults)
+        return mergeResults(word, validApiResults, scraperResults)
     }
 
-    /**
-     * Fetch word data from all API clients in parallel
-     */
-    private suspend fun fetchFromAllSources(word: String): List<SourcedWordData?> = coroutineScope {
+    private suspend fun fetchFromAllApiSources(word: String): List<SourcedWordData?> = coroutineScope {
         apiClients.map { client ->
             async {
-                try {
-                    client.fetchWordData(word)
-                } catch (e: Exception) {
+                try { client.fetchWordData(word) }
+                catch (e: Exception) {
                     logger.warn("Error fetching from ${client.sourceName}: ${e.message}")
                     null
                 }
@@ -89,55 +98,64 @@ class DictionaryAggregationService {
         }.awaitAll()
     }
 
-    /**
-     * Merge results from multiple sources into a single response
-     */
-    private fun mergeResults(word: String, results: List<SourcedWordData>): WordDetailResponse {
-        // Pick first non-null phonetic
-        val phonetic = results.firstNotNullOfOrNull { it.phonetic }
+    // ── Smart merge & deduplication ──────────────────────────────────────────
 
-        // Pick first non-null audio URL
-        val audioUrl = results.firstNotNullOfOrNull { it.audioUrl }
+    private fun mergeResults(
+        word: String,
+        apiResults: List<SourcedWordData>,
+        scraperResults: List<ScrapeEnrichment>
+    ): WordDetailResponse {
 
-        // Combine all definitions (limit to avoid overwhelming response)
-        val allDefinitions = results
-            .flatMap { it.definitions }
-            .distinctBy { it.definition.lowercase() } // Remove exact duplicates
-            .take(15) // Limit to 15 definitions
-            .map { sourcedDef ->
+        // ── Pronunciations ────────────────────────────────────────────────
+        // Collect from API clients (FreeDictionary provides UK/US entries)
+        val apiPronunciations = apiResults.flatMap { it.pronunciations }
+        // Collect from scrapers (Cambridge/LDOCE have more accurate IPA + audio)
+        val scraperPronunciations = scraperResults.flatMap { enrichment ->
+            enrichment.pronunciations.map { p ->
+                PronunciationEntry(region = p.region, ipa = p.ipa, audioMp3Url = p.audioMp3Url)
+            }
+        }
+        // Scraper data takes priority; API data fills gaps
+        val pronunciations = mergePronunciations(scraperPronunciations + apiPronunciations)
+
+        // Legacy fields for backward-compat
+        val phonetic = pronunciations.firstOrNull { it.ipa != null }?.ipa
+            ?: apiResults.firstNotNullOfOrNull { it.phonetic }
+        val audioUrl = pronunciations.firstOrNull { it.audioMp3Url != null }?.audioMp3Url
+            ?: apiResults.firstNotNullOfOrNull { it.audioUrl }
+
+        // ── Definitions ───────────────────────────────────────────────────
+        val apiDefs = apiResults.flatMap { it.definitions }
+            .map { DetailedDefinition(it.partOfSpeech, it.definition, it.example, it.source) }
+        val scraperDefs = scraperResults.flatMap { enrichment ->
+            enrichment.senses.map { sense ->
                 DetailedDefinition(
-                    partOfSpeech = sourcedDef.partOfSpeech,
-                    definition = sourcedDef.definition,
-                    example = sourcedDef.example,
-                    source = sourcedDef.source
+                    partOfSpeech = sense.pos ?: "",
+                    definition = sense.definition,
+                    example = sense.examples.firstOrNull(),
+                    source = enrichment.source
                 )
             }
+        }
+        val allDefinitions = deduplicateDefinitions(scraperDefs + apiDefs).take(15)
 
-        // Combine all synonyms from all sources
-        val allSynonyms = results
-            .flatMap { it.synonyms }
-            .distinct()
-            .sorted()
-            .take(20) // Limit to 20 synonyms
+        // ── Synonyms / antonyms ───────────────────────────────────────────
+        val allSynonyms = apiResults.flatMap { it.synonyms }
+            .distinct().sorted().take(20)
+        val allAntonyms = apiResults.flatMap { it.antonyms }
+            .distinct().sorted().take(20)
 
-        // Combine all antonyms from all sources
-        val allAntonyms = results
-            .flatMap { it.antonyms }
-            .distinct()
-            .sorted()
-            .take(20) // Limit to 20 antonyms
-
-        // Combine all examples from all sources
-        val allExamples = results
-            .flatMap { it.examples }
-            .distinct()
-            .take(10) // Limit to 10 examples
+        // ── Examples ──────────────────────────────────────────────────────
+        val apiExamples = apiResults.flatMap { it.examples }
+        val scraperExamples = scraperResults.flatMap { it.examples }
+        val allExamples = deduplicateExamples(scraperExamples + apiExamples).take(10)
 
         return WordDetailResponse(
             word = word.trim(),
             phonetic = phonetic,
             audioUrl = audioUrl,
-            translation = null, // Translation will be added separately
+            pronunciations = pronunciations,
+            translation = null, // added by DictionaryService
             definitions = allDefinitions,
             synonyms = allSynonyms,
             antonyms = allAntonyms,
@@ -146,9 +164,51 @@ class DictionaryAggregationService {
     }
 
     /**
-     * Close the HTTP client when done
+     * Merge pronunciations: one entry per region, scraper data wins over API data.
      */
+    private fun mergePronunciations(entries: List<PronunciationEntry>): List<PronunciationEntry> {
+        val byRegion = linkedMapOf<String, PronunciationEntry>()
+        for (entry in entries) {
+            val key = entry.region ?: "any"
+            // First non-null wins per region key
+            byRegion.getOrPut(key) { entry }
+            // Upgrade: fill in missing fields from later entries for same region
+            val existing = byRegion[key]!!
+            if (existing.audioMp3Url == null && entry.audioMp3Url != null ||
+                existing.ipa == null && entry.ipa != null) {
+                byRegion[key] = PronunciationEntry(
+                    region = existing.region,
+                    ipa = existing.ipa ?: entry.ipa,
+                    audioMp3Url = existing.audioMp3Url ?: entry.audioMp3Url
+                )
+            }
+        }
+        return byRegion.values.toList()
+    }
+
+    /**
+     * Remove duplicate definitions using normalized text comparison.
+     * Two definitions are considered duplicates if their normalized first 60 chars match.
+     */
+    private fun deduplicateDefinitions(defs: List<DetailedDefinition>): List<DetailedDefinition> {
+        val seen = mutableSetOf<String>()
+        return defs.filter { def ->
+            val key = def.definition.lowercase().replace(Regex("[^a-z0-9 ]"), "")
+                .trim().take(60)
+            seen.add(key)
+        }
+    }
+
+    /**
+     * Remove duplicate examples (exact lowercase match).
+     */
+    private fun deduplicateExamples(examples: List<String>): List<String> {
+        val seen = mutableSetOf<String>()
+        return examples.filter { seen.add(it.lowercase().trim()) }
+    }
+
     fun close() {
         httpClient.close()
+        scraperService.close()
     }
 }
