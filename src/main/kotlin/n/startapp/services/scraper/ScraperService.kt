@@ -29,16 +29,20 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
 
     private val cambridge = CambridgeScraper(httpClient)
     private val ldoce = LdoceScraper(httpClient)
+    private val oxford = OxfordScraper(httpClient)
+    private val oed = OedScraper(httpClient)
 
     /**
-     * Fetch enrichment data from Cambridge and LDOCE in parallel.
+     * Fetch enrichment data from Cambridge, LDOCE, Oxford (OALD), and OED in parallel.
      * Results are cached in Postgres (TTL 14 days). Returns empty list on total failure.
      */
     suspend fun enrichWord(word: String): List<ScrapeEnrichment> = coroutineScope {
         val startMs = System.currentTimeMillis()
         val results = listOf(
             async { scrapeWithCache(CambridgeScraper.SOURCE_ID, word) },
-            async { scrapeWithCache(LdoceScraper.SOURCE_ID, word) }
+            async { scrapeWithCache(LdoceScraper.SOURCE_ID, word) },
+            async { scrapeWithCache(OxfordScraper.SOURCE_ID, word) },
+            async { scrapeWithCache(OedScraper.SOURCE_ID, word) }
         ).awaitAll().filterNotNull()
         val elapsed = System.currentTimeMillis() - startMs
         if (results.isEmpty()) {
@@ -82,6 +86,8 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
                 val result = when (sourceId) {
                     CambridgeScraper.SOURCE_ID -> cambridge.scrape(word)
                     LdoceScraper.SOURCE_ID -> ldoce.scrape(word)
+                    OxfordScraper.SOURCE_ID -> oxford.scrape(word)
+                    OedScraper.SOURCE_ID -> oed.scrape(word)
                     else -> null
                 }
                 if (result != null) return result
@@ -97,6 +103,8 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
     private fun parserVersion(sourceId: String) = when (sourceId) {
         CambridgeScraper.SOURCE_ID -> CambridgeScraper.PARSER_VERSION
         LdoceScraper.SOURCE_ID -> LdoceScraper.PARSER_VERSION
+        OxfordScraper.SOURCE_ID -> OxfordScraper.PARSER_VERSION
+        OedScraper.SOURCE_ID -> OedScraper.PARSER_VERSION
         else -> "v1"
     }
 
