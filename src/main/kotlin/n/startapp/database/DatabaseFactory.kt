@@ -50,7 +50,7 @@ object DatabaseFactory {
             // Create tables if they don't exist
             transaction {
                 println("📋 Creating database tables if they don't exist...")
-                SchemaUtils.create(Users, SavedWords, Flashcards, ScraperCache)
+                SchemaUtils.createMissingTablesAndColumns(Users, SavedWords, Flashcards, ScraperCache)
                 println("✅ Database tables ready")
             }
         } catch (e: Exception) {
