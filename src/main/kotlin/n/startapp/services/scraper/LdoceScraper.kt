@@ -43,7 +43,9 @@ class LdoceScraper(private val httpClient: HttpClient) {
             val result = try {
                 logger.info("LDOCE: trying '$word' → $url")
                 val html = fetchHtml(url)
-                logger.debug("LDOCE: fetched ${html.length} bytes for '$word' at $url")
+                val htmlTitle = Regex("<title[^>]*>([^<]+)</title>", RegexOption.IGNORE_CASE)
+                    .find(html)?.groupValues?.getOrNull(1)?.trim() ?: "no-title"
+                logger.info("LDOCE: got ${html.length} bytes, title='$htmlTitle' for '$word'")
                 parseHtml(word, url, html)
             } catch (e: Exception) {
                 val elapsed = System.currentTimeMillis() - startMs
@@ -87,6 +89,8 @@ class LdoceScraper(private val httpClient: HttpClient) {
             header("Referer", "https://www.ldoceonline.com/")
             header("Cache-Control", "no-cache")
             header("Connection", "keep-alive")
+            // Simulate accepted GDPR/OneTrust consent to bypass cookie consent wall
+            header("Cookie", "OptanonAlertBoxClosed=2024-01-01T00:00:00.000Z; OptanonConsent=isGpcEnabled=0&datestamp=Mon+Jan+01+2024&version=202401.1.0&interactionCount=2&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1")
         }
         return response.bodyAsText()
     }
