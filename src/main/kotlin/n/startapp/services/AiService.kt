@@ -33,7 +33,10 @@ class AiService {
         }
     }
 
-    private val aiDomen: String get() = EnvConfig.aiDomen
+    private val aiDomen: String get() {
+        val raw = EnvConfig.aiDomen.trimEnd('/')
+        return if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
+    }
     private val aiApiKey: String get() = EnvConfig.aiApiKey
     private val model = "gpt-5.2"
 
