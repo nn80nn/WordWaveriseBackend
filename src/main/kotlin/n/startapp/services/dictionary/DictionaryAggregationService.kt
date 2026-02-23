@@ -12,9 +12,11 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.Json
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.dictionary.DetailedDefinition
+import n.startapp.models.dictionary.EntryMeaning
 import n.startapp.models.dictionary.PronunciationEntry
 import n.startapp.models.dictionary.SourcedWordData
 import n.startapp.models.dictionary.WordDetailResponse
+import n.startapp.models.dictionary.WordEntry
 import n.startapp.models.scraper.ScrapeEnrichment
 import n.startapp.repositories.ScraperCacheRepository
 import n.startapp.services.scraper.ScraperService
@@ -150,6 +152,9 @@ class DictionaryAggregationService {
         val scraperExamples = scraperResults.flatMap { it.examples }
         val allExamples = deduplicateExamples(scraperExamples + apiExamples).take(10)
 
+        // ── Entries (grouped by POS for homograph support) ────────────────
+        val entries = buildEntries(allDefinitions, pronunciations, allSynonyms, allAntonyms)
+
         return WordDetailResponse(
             word = word.trim(),
             phonetic = phonetic,
@@ -157,6 +162,7 @@ class DictionaryAggregationService {
             pronunciations = pronunciations,
             translation = null, // added by DictionaryService
             definitions = allDefinitions,
+            entries = entries,
             synonyms = allSynonyms,
             antonyms = allAntonyms,
             examples = allExamples
@@ -184,6 +190,54 @@ class DictionaryAggregationService {
             }
         }
         return byRegion.values.toList()
+    }
+
+    /**
+     * Group deduplicated definitions by part-of-speech to produce [WordEntry] items.
+     * Ordering follows standard lexicographic POS order (noun → verb → adjective → …).
+     * Global pronunciations, synonyms, and antonyms are shared across all entries
+     * (per-entry audio for true homographs is a future enhancement).
+     */
+    private fun buildEntries(
+        definitions: List<DetailedDefinition>,
+        pronunciations: List<PronunciationEntry>,
+        synonyms: List<String>,
+        antonyms: List<String>
+    ): List<WordEntry> {
+        if (definitions.isEmpty()) return emptyList()
+
+        val posOrder = listOf(
+            "noun", "verb", "adjective", "adverb", "pronoun",
+            "preposition", "conjunction", "interjection", "phrase", "abbreviation"
+        )
+
+        return definitions
+            .groupBy { it.partOfSpeech.lowercase().trim() }
+            .entries
+            .sortedBy { (pos, _) ->
+                val idx = posOrder.indexOf(pos)
+                if (idx < 0) posOrder.size else idx
+            }
+            .mapIndexed { idx, (pos, defs) ->
+                WordEntry(
+                    id = (idx + 1).toString(),
+                    partOfSpeech = pos.ifBlank { null },
+                    phonetic = pronunciations.firstOrNull { it.ipa != null }?.ipa,
+                    audioUrl = pronunciations.firstOrNull { it.audioMp3Url != null }?.audioMp3Url,
+                    pronunciations = pronunciations,
+                    meanings = defs.map { def ->
+                        EntryMeaning(
+                            definition = def.definition,
+                            example = def.example,
+                            source = def.source
+                        )
+                    }.take(10),
+                    synonyms = synonyms.take(10),
+                    antonyms = antonyms.take(10),
+                    examples = defs.mapNotNull { it.example }.distinct().take(5)
+                )
+            }
+            .filter { it.meanings.isNotEmpty() }
     }
 
     /**

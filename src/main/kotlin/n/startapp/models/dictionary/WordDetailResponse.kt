@@ -13,9 +13,38 @@ data class PronunciationEntry(
 )
 
 /**
+ * One definition within a WordEntry.
+ */
+@Serializable
+data class EntryMeaning(
+    val definition: String,
+    val example: String? = null,
+    val source: String? = null          // "LDOCE" | "CAMBRIDGE" | "OXFORD" | "FREEDICT" etc.
+)
+
+/**
+ * A single entry (homograph) for a word.
+ * Words like "lead" have two entries: noun/verb /liːd/ and noun/adj /lɛd/.
+ * For most words there will be 1–3 entries grouped by part of speech.
+ */
+@Serializable
+data class WordEntry(
+    val id: String,                                     // "1", "2", …
+    val partOfSpeech: String? = null,                   // "noun", "verb", null = unknown
+    val phonetic: String? = null,                       // IPA for this entry (/liːd/ vs /lɛd/)
+    val audioUrl: String? = null,                       // legacy MP3 field
+    val pronunciations: List<PronunciationEntry> = emptyList(),
+    val meanings: List<EntryMeaning> = emptyList(),
+    val synonyms: List<String> = emptyList(),
+    val antonyms: List<String> = emptyList(),
+    val examples: List<String> = emptyList()
+)
+
+/**
  * Enhanced word detail response with aggregated data from multiple sources.
  * Fields [phonetic] and [audioUrl] are kept for backward-compatibility;
  * [pronunciations] contains the full UK/US breakdown.
+ * [entries] groups meanings by part-of-speech (homograph support).
  */
 @Serializable
 data class WordDetailResponse(
@@ -24,14 +53,15 @@ data class WordDetailResponse(
     val audioUrl: String? = null,
     val pronunciations: List<PronunciationEntry> = emptyList(),
     val translation: String? = null,
-    val definitions: List<DetailedDefinition>,
+    val definitions: List<DetailedDefinition>,          // flat list — backward-compat
+    val entries: List<WordEntry> = emptyList(),          // grouped by POS — preferred
     val synonyms: List<String> = emptyList(),
     val antonyms: List<String> = emptyList(),
     val examples: List<String> = emptyList()
 )
 
 /**
- * Detailed definition with part of speech and metadata.
+ * Detailed definition with part of speech and metadata (flat list, backward-compat).
  */
 @Serializable
 data class DetailedDefinition(
