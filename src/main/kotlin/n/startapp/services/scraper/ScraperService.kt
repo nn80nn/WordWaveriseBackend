@@ -35,24 +35,43 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
      * Results are cached in Postgres (TTL 14 days). Returns empty list on total failure.
      */
     suspend fun enrichWord(word: String): List<ScrapeEnrichment> = coroutineScope {
-        listOf(
+        val startMs = System.currentTimeMillis()
+        val results = listOf(
             async { scrapeWithCache(CambridgeScraper.SOURCE_ID, word) },
             async { scrapeWithCache(LdoceScraper.SOURCE_ID, word) }
         ).awaitAll().filterNotNull()
+        val elapsed = System.currentTimeMillis() - startMs
+        if (results.isEmpty()) {
+            logger.warn("ScraperService: all scrapers returned nothing for '$word' (${elapsed}ms)")
+        } else {
+            logger.info(
+                "ScraperService: enrichWord('$word') done in ${elapsed}ms — " +
+                "sources: ${results.map { it.source }.joinToString()}, " +
+                "total senses: ${results.sumOf { it.senses.size }}, " +
+                "total pronunciations: ${results.sumOf { it.pronunciations.size }}"
+            )
+        }
+        results
     }
 
     private suspend fun scrapeWithCache(sourceId: String, word: String): ScrapeEnrichment? {
         val cacheKey = "$sourceId|$word|ANY|${parserVersion(sourceId)}"
         cacheRepo.get(cacheKey)?.let { cached ->
-            logger.debug("Scraper cache hit: $cacheKey")
+            logger.info("Scraper cache HIT [$sourceId] for '$word'")
             return cached
         }
+        logger.info("Scraper cache MISS [$sourceId] for '$word' — scraping...")
 
         val result = scrapeWithRetry(sourceId, word)
         if (result != null) {
-            try { cacheRepo.put(cacheKey, result) } catch (e: Exception) {
+            try {
+                cacheRepo.put(cacheKey, result)
+                logger.debug("Cached scrape result [$sourceId] for '$word'")
+            } catch (e: Exception) {
                 logger.warn("Failed to cache scrape result for '$word' from $sourceId: ${e.message}")
             }
+        } else {
+            logger.warn("Scraper [$sourceId] returned no data for '$word' after retries")
         }
         return result
     }
@@ -66,6 +85,7 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
                     else -> null
                 }
                 if (result != null) return result
+                logger.warn("Scraper [$sourceId] attempt ${attempt + 1}/$maxAttempts: null result for '$word'")
             } catch (e: Exception) {
                 logger.warn("Scrape attempt ${attempt + 1}/$maxAttempts failed for '$word' from $sourceId: ${e.message}")
                 if (attempt + 1 < maxAttempts) kotlinx.coroutines.delay(500)

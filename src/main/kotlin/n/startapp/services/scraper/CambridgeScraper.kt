@@ -31,11 +31,27 @@ class CambridgeScraper(private val httpClient: HttpClient) {
     suspend fun scrape(word: String): ScrapeEnrichment? {
         val slug = word.trim().lowercase().replace(' ', '-')
         val url = "$BASE_URL/dictionary/english/$slug"
+        val startMs = System.currentTimeMillis()
         return try {
+            logger.info("Cambridge: starting scrape for '$word' → $url")
             val html = fetchHtml(url)
-            parseHtml(word, url, html)
+            logger.debug("Cambridge: fetched ${html.length} bytes for '$word'")
+            val result = parseHtml(word, url, html)
+            val elapsed = System.currentTimeMillis() - startMs
+            if (result != null) {
+                logger.info(
+                    "Cambridge OK for '$word' in ${elapsed}ms: " +
+                    "${result.pronunciations.size} pronunciations " +
+                    "(${result.pronunciations.joinToString { "${it.region}:ipa=${it.ipa != null},mp3=${it.audioMp3Url != null}" }}), " +
+                    "${result.senses.size} senses, ${result.examples.size} examples"
+                )
+            } else {
+                logger.info("Cambridge: no usable data found for '$word' (${elapsed}ms)")
+            }
+            result
         } catch (e: Exception) {
-            logger.warn("Cambridge scrape failed for '$word': ${e.message}")
+            val elapsed = System.currentTimeMillis() - startMs
+            logger.warn("Cambridge scrape failed for '$word' after ${elapsed}ms: ${e.message}")
             null
         }
     }
