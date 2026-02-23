@@ -12,9 +12,11 @@ import n.startapp.routes.authRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.services.DictionaryService
+import n.startapp.services.SuggestService
 
 fun Application.configureRouting() {
     val dictionaryService = DictionaryService()
+    val suggestService = SuggestService()
 
     routing {
         get("/") {
@@ -63,6 +65,19 @@ fun Application.configureRouting() {
                 }
 
                 val result = dictionaryService.searchWordEnhanced(query)
+                call.respond(ApiResponse.success(result))
+            }
+
+            // Spelling suggestions (English) or translation candidates (Russian input)
+            get("/suggest") {
+                val query = call.request.queryParameters["query"]
+                    ?: throw BadRequestException("Query parameter 'query' is required")
+
+                if (query.isBlank()) {
+                    throw BadRequestException("Query parameter 'query' cannot be empty")
+                }
+
+                val result = suggestService.getSuggestions(query)
                 call.respond(ApiResponse.success(result))
             }
         }
