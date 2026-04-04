@@ -38,9 +38,9 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
      */
     suspend fun enrichWord(word: String): List<ScrapeEnrichment> = coroutineScope {
         val startMs = System.currentTimeMillis()
+        // LDOCE removed — ldoceonline.com is blocked by Cloudflare on server IPs
         val results = listOf(
             async { scrapeWithCache(CambridgeScraper.SOURCE_ID, word) },
-            async { scrapeWithCache(LdoceScraper.SOURCE_ID, word) },
             async { scrapeWithCache(OxfordScraper.SOURCE_ID, word) },
             async { scrapeWithCache(OedScraper.SOURCE_ID, word) }
         ).awaitAll().filterNotNull()

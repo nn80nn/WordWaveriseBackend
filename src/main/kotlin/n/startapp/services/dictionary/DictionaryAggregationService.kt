@@ -254,15 +254,23 @@ class DictionaryAggregationService {
     }
 
     /**
-     * Remove duplicate definitions using normalized text comparison.
-     * Two definitions are considered duplicates if their normalized first 60 chars match.
+     * Remove duplicate definitions.
+     * A definition is a duplicate only if the same SOURCE already has an identical definition.
+     * Definitions from different sources are always kept — they power per-source tabs.
+     * Also applies a per-source limit of 8 to avoid flooding the All tab.
      */
     private fun deduplicateDefinitions(defs: List<DetailedDefinition>): List<DetailedDefinition> {
-        val seen = mutableSetOf<String>()
+        val seenPerSource = mutableMapOf<String, MutableSet<String>>()
+        val countPerSource = mutableMapOf<String, Int>()
         return defs.filter { def ->
-            val key = def.definition.lowercase().replace(Regex("[^a-z0-9 ]"), "")
-                .trim().take(60)
-            seen.add(key)
+            val source = def.source?.uppercase() ?: "UNKNOWN"
+            val key = def.definition.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().take(60)
+            val seenKeys = seenPerSource.getOrPut(source) { mutableSetOf() }
+            val count = countPerSource.getOrDefault(source, 0)
+            if (count >= 8) return@filter false
+            if (!seenKeys.add(key)) return@filter false
+            countPerSource[source] = count + 1
+            true
         }
     }
 
