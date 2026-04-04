@@ -58,15 +58,21 @@ class DictionaryAggregationService {
 
     /**
      * Fetch word data from all API sources + scrapers in parallel and merge results.
+     * @param skipScrapers if true, skip web scrapers for faster response (API data only)
      * @throws NotFoundException if word not found in any source
      */
-    suspend fun aggregateWordData(word: String): WordDetailResponse {
-        logger.info("Fetching word data for '$word' from ${apiClients.size} API sources + scrapers")
+    suspend fun aggregateWordData(word: String, skipScrapers: Boolean = false): WordDetailResponse {
+        if (skipScrapers) {
+            logger.info("Fetching word data for '$word' from ${apiClients.size} API sources only (quick mode)")
+        } else {
+            logger.info("Fetching word data for '$word' from ${apiClients.size} API sources + scrapers")
+        }
 
         // Run API clients and scrapers in parallel
         val (apiResults, scraperResults) = coroutineScope {
             val apis = async { fetchFromAllApiSources(word) }
             val scrapers = async {
+                if (skipScrapers) return@async emptyList()
                 try { scraperService.enrichWord(word) }
                 catch (e: Exception) {
                     logger.warn("Scraper enrichment failed for '$word': ${e.message}")

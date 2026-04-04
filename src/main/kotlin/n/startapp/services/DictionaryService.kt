@@ -76,6 +76,28 @@ class DictionaryService {
     }
 
     /**
+     * Quick search — returns only API data (no web scrapers), typically in ~1-2s.
+     * Cached separately under "quick:{word}" key for 24h.
+     */
+    suspend fun searchWordQuick(word: String): WordDetailResponse {
+        val normalizedWord = word.trim().lowercase()
+        val quickKey = "quick:$normalizedWord"
+
+        cacheService.getWord(quickKey)?.let { cached ->
+            logger.info("Returning cached quick result for word: '$word'")
+            return cached
+        }
+
+        logger.info("Quick-fetching word '$word' from API sources only")
+        val aggregatedData = aggregationService.aggregateWordData(normalizedWord, skipScrapers = true)
+        val translation = getTranslation(normalizedWord)
+        val finalResult = aggregatedData.copy(translation = translation)
+
+        cacheService.putWord(quickKey, finalResult)
+        return finalResult
+    }
+
+    /**
      * Legacy search method for backward compatibility
      * Converts new format to old format
      */

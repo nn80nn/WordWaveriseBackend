@@ -59,6 +59,7 @@ fun Application.configureRouting() {
             }
 
             // Enhanced endpoint with multi-source aggregation
+            // ?quick=true returns only API data (~1-2s); full mode also runs web scrapers (~5-10s)
             get("/details") {
                 val query = call.request.queryParameters["query"]
                     ?: throw BadRequestException("Query parameter 'query' is required")
@@ -67,7 +68,9 @@ fun Application.configureRouting() {
                     throw BadRequestException("Query parameter 'query' cannot be empty")
                 }
 
-                val result = dictionaryService.searchWordEnhanced(query)
+                val quick = call.request.queryParameters["quick"]?.lowercase() == "true"
+                val result = if (quick) dictionaryService.searchWordQuick(query)
+                             else dictionaryService.searchWordEnhanced(query)
                 call.respond(ApiResponse.success(result))
             }
 
