@@ -3,6 +3,7 @@ package n.startapp.services.scraper
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.http.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,12 +18,17 @@ class LdoceScraper(private val httpClient: HttpClient) {
 
     companion object {
         const val SOURCE_ID = "LDOCE"
-        const val PARSER_VERSION = "v3"
+        const val PARSER_VERSION = "v4"
         private const val BASE_URL = "https://www.ldoceonline.com"
-        private const val RATE_LIMIT_MS = 1200L
+        private const val RATE_LIMIT_MS = 1500L
         private val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        private val CLOUDFLARE_TITLES = listOf(
+            "just a moment", "attention required", "please wait",
+            "checking your browser", "ddos-guard", "403 forbidden",
+            "access denied", "enable javascript"
+        )
     }
 
     private val logger = LoggerFactory.getLogger(LdoceScraper::class.java)
@@ -33,10 +39,11 @@ class LdoceScraper(private val httpClient: HttpClient) {
         val slug = word.trim().lowercase().replace(' ', '-')
         val startMs = System.currentTimeMillis()
 
-        // Try primary URL, then with _1 suffix (LDOCE sometimes uses numbered variants)
+        // Try multiple URL patterns: standard, numbered variant, and english-specific path
         val urlsToTry = listOf(
             "$BASE_URL/dictionary/$slug",
-            "$BASE_URL/dictionary/${slug}_1"
+            "$BASE_URL/dictionary/${slug}_1",
+            "$BASE_URL/dictionary/english/$slug"
         )
 
         for (url in urlsToTry) {
@@ -81,15 +88,39 @@ class LdoceScraper(private val httpClient: HttpClient) {
             if (elapsed < RATE_LIMIT_MS) delay(RATE_LIMIT_MS - elapsed)
             lastRequestTime = System.currentTimeMillis()
         }
-        val response = httpClient.get(url) {
+        val response: HttpResponse = httpClient.get(url) {
             header("User-Agent", USER_AGENT)
-            header("Accept-Language", "en-US,en;q=0.9")
-            header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            header("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
+            header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
             // NOTE: Do NOT send Accept-Encoding — Ktor CIO has no ContentEncoding plugin,
             // so gzip responses would arrive as raw compressed bytes and break JSoup parsing.
-            header("Referer", "https://www.ldoceonline.com/")
+            header("Referer", "https://www.google.com/")
+            header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+            header("sec-ch-ua-mobile", "?0")
+            header("sec-ch-ua-platform", "\"Windows\"")
+            header("sec-fetch-dest", "document")
+            header("sec-fetch-mode", "navigate")
+            header("sec-fetch-site", "cross-site")
+            header("sec-fetch-user", "?1")
+            header("Upgrade-Insecure-Requests", "1")
+            header("Cache-Control", "max-age=0")
             // Simulate accepted GDPR/OneTrust consent to bypass cookie consent wall
-            header("Cookie", "OptanonAlertBoxClosed=2024-01-01T00:00:00.000Z; OptanonConsent=isGpcEnabled=0&datestamp=Mon+Jan+01+2024&version=202401.1.0&interactionCount=2&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1")
+            header(
+                "Cookie",
+                "OptanonAlertBoxClosed=2025-01-01T00:00:00.000Z; " +
+                "OptanonConsent=isGpcEnabled=0&datestamp=Wed+Jan+01+2025&version=202501.1.0&" +
+                "interactionCount=2&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1; " +
+                "cf_clearance=placeholder"
+            )
+        }
+        val statusCode = response.status.value
+        if (statusCode == 403 || statusCode == 429) {
+            logger.warn("LDOCE: HTTP $statusCode at $url — likely bot-protection, giving up")
+            throw Exception("HTTP $statusCode bot-protection")
+        }
+        if (statusCode !in 200..299) {
+            logger.warn("LDOCE: HTTP $statusCode at $url")
+            throw Exception("HTTP $statusCode")
         }
         return response.bodyAsText()
     }
@@ -99,6 +130,21 @@ class LdoceScraper(private val httpClient: HttpClient) {
     internal fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
         if (html.isBlank()) return null
         val doc = Jsoup.parse(html)
+
+        // Detect Cloudflare / bot-protection challenge pages
+        val pageTitle = doc.title().lowercase()
+        if (CLOUDFLARE_TITLES.any { pageTitle.contains(it) }) {
+            logger.warn("LDOCE: Cloudflare/bot-protection detected for '$word' at $url (title='${doc.title()}')")
+            return null
+        }
+
+        // Detect redirect / "word not found" pages (no dictionary content at all)
+        val hasDictContent = doc.select("span.DEF, span.Sense, .dictentry, .entry_content").isNotEmpty()
+        val hasMetaRedirect = doc.select("meta[http-equiv=refresh]").isNotEmpty()
+        if (!hasDictContent && (hasMetaRedirect || doc.select("body").text().length < 200)) {
+            logger.info("LDOCE: no dictionary content at $url for '$word'")
+            return null
+        }
 
         // ── Pronunciations ────────────────────────────────────────────────
         val pronunciations = mutableListOf<ScrapedPronunciation>()
