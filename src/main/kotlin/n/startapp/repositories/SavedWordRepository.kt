@@ -5,6 +5,7 @@ import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.SavedWord
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 
 /**
  * Repository for SavedWord CRUD operations
@@ -20,7 +21,8 @@ class SavedWordRepository {
         word = row[SavedWords.word],
         translation = row[SavedWords.translation],
         definition = row[SavedWords.definition],
-        savedAt = row[SavedWords.savedAt]
+        savedAt = row[SavedWords.savedAt],
+        categoryId = row[SavedWords.categoryId]
     )
 
     /**
@@ -80,5 +82,14 @@ class SavedWordRepository {
      */
     suspend fun deleteAllByUserId(userId: Int): Boolean = dbQuery {
         SavedWords.deleteWhere { SavedWords.userId eq userId } > 0
+    }
+
+    /**
+     * Set or clear category for a saved word
+     */
+    suspend fun setCategory(userId: Int, word: String, categoryId: Int?): Boolean = dbQuery {
+        SavedWords.update({ (SavedWords.userId eq userId) and (SavedWords.word eq word) }) {
+            it[SavedWords.categoryId] = categoryId
+        } > 0
     }
 }

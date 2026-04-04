@@ -10,6 +10,7 @@ import n.startapp.models.ApiResponse
 import n.startapp.models.HealthStatus
 import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
+import n.startapp.routes.categoryRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.services.AiService
@@ -109,6 +110,9 @@ fun Application.configureRouting() {
 
         // Flashcard routes (protected)
         flashcardRoutes()
+
+        // Category routes (protected)
+        categoryRoutes()
     }
 
     // AI routes (protected)

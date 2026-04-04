@@ -12,7 +12,8 @@ data class SavedWord(
     val word: String,
     val translation: String?,
     val definition: String?,
-    val savedAt: Instant
+    val savedAt: Instant,
+    val categoryId: Int? = null
 )
 
 /**
@@ -24,7 +25,8 @@ data class SavedWordDTO(
     val word: String,
     val translation: String?,
     val definition: String?,
-    val savedAt: String
+    val savedAt: String,
+    val categoryId: Int? = null
 )
 
 /**
@@ -35,6 +37,14 @@ data class SaveWordRequest(
     val word: String,
     val translation: String? = null,
     val definition: String? = null
+)
+
+/**
+ * Request to move word to a category
+ */
+@Serializable
+data class SetWordCategoryRequest(
+    val categoryId: Int?  // null = remove from category
 )
 
 /**
@@ -53,5 +63,6 @@ fun SavedWord.toDTO(): SavedWordDTO = SavedWordDTO(
     word = word,
     translation = translation,
     definition = definition,
-    savedAt = savedAt.toString()
+    savedAt = savedAt.toString(),
+    categoryId = categoryId
 )

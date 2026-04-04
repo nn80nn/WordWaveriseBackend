@@ -14,6 +14,7 @@ object SavedWords : Table("saved_words") {
     val translation = varchar("translation", 500).nullable()
     val definition = text("definition").nullable()
     val savedAt = timestamp("saved_at").clientDefault { Instant.now() }
+    val categoryId = integer("category_id").references(Categories.id).nullable()
 
     override val primaryKey = PrimaryKey(id)
 
