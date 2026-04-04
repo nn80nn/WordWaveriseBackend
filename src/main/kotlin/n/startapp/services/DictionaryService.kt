@@ -90,11 +90,9 @@ class DictionaryService {
 
         logger.info("Quick-fetching word '$word' from API sources only")
         val aggregatedData = aggregationService.aggregateWordData(normalizedWord, skipScrapers = true)
-        val translation = getTranslation(normalizedWord)
-        val finalResult = aggregatedData.copy(translation = translation)
 
-        cacheService.putWord(quickKey, finalResult)
-        return finalResult
+        cacheService.putWord(quickKey, aggregatedData)
+        return aggregatedData
     }
 
     /**

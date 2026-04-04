@@ -46,19 +46,31 @@ class LdoceScraper(private val httpClient: HttpClient) {
             "$BASE_URL/dictionary/english/$slug"
         )
 
+        var cloudflareBlocked = false
+
         for (url in urlsToTry) {
+            if (cloudflareBlocked) break
             val result = try {
                 logger.info("LDOCE: trying '$word' → $url")
                 val html = fetchHtml(url)
-                val htmlTitle = Regex("<title[^>]*>([^<]+)</title>", RegexOption.IGNORE_CASE)
-                    .find(html)?.groupValues?.getOrNull(1)?.trim() ?: "no-title"
-                logger.info("LDOCE: got ${html.length} bytes, title='$htmlTitle' for '$word'")
-                parseHtml(word, url, html)
+                // Quick Cloudflare check before full parse
+                val titleMatch = Regex("<title[^>]*>([^<]+)</title>", RegexOption.IGNORE_CASE)
+                    .find(html)?.groupValues?.getOrNull(1)?.trim()?.lowercase() ?: ""
+                logger.info("LDOCE: got ${html.length} bytes, title='$titleMatch' for '$word'")
+                if (CLOUDFLARE_TITLES.any { titleMatch.contains(it) }) {
+                    logger.warn("LDOCE: Cloudflare detected for '$word', bailing all URLs")
+                    cloudflareBlocked = true
+                    null
+                } else {
+                    parseHtml(word, url, html)
+                }
             } catch (e: Exception) {
                 val elapsed = System.currentTimeMillis() - startMs
                 logger.warn("LDOCE scrape failed for '$word' at $url after ${elapsed}ms: ${e.message}")
                 null
             }
+
+            if (cloudflareBlocked) break
 
             if (result != null) {
                 val elapsed = System.currentTimeMillis() - startMs
