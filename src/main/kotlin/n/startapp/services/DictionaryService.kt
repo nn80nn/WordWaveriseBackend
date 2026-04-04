@@ -9,6 +9,7 @@ import io.ktor.client.plugins.logging.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.dictionary.*
@@ -89,7 +90,12 @@ class DictionaryService {
         }
 
         logger.info("Quick-fetching word '$word' from API sources only")
-        val aggregatedData = aggregationService.aggregateWordData(normalizedWord, skipScrapers = true)
+        val aggregatedData = withTimeoutOrNull(5_000) {
+            aggregationService.aggregateWordData(normalizedWord, skipScrapers = true)
+        } ?: run {
+            logger.warn("Quick fetch timed out for '$word' after 5s")
+            throw NotFoundException("Word '$word' not found (timeout)")
+        }
 
         cacheService.putWord(quickKey, aggregatedData)
         return aggregatedData

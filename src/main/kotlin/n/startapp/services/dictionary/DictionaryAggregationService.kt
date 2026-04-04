@@ -9,6 +9,7 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.dictionary.DetailedDefinition
@@ -50,6 +51,7 @@ class DictionaryAggregationService {
 
     private val apiClients: List<DictionaryApiClient> = listOf(
         FreeDictionaryApiClient(httpClient),
+        WiktionaryApiClient(httpClient),
         WordsApiClient(httpClient),
         DataMuseApiClient(httpClient)
     )
@@ -72,10 +74,15 @@ class DictionaryAggregationService {
         val (apiResults, scraperResults) = coroutineScope {
             val apis = async { fetchFromAllApiSources(word) }
             val scrapers = async {
-                if (skipScrapers) return@async emptyList()
-                try { scraperService.enrichWord(word) }
-                catch (e: Exception) {
-                    logger.warn("Scraper enrichment failed for '$word': ${e.message}")
+                if (skipScrapers) return@async emptyList<n.startapp.models.scraper.ScrapeEnrichment>()
+                withTimeoutOrNull(12_000) {
+                    try { scraperService.enrichWord(word) }
+                    catch (e: Exception) {
+                        logger.warn("Scraper enrichment failed for '$word': ${e.message}")
+                        emptyList()
+                    }
+                } ?: run {
+                    logger.warn("Scrapers timed out for '$word' after 12s")
                     emptyList()
                 }
             }

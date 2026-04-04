@@ -80,7 +80,7 @@ class ScraperService(private val cacheRepo: ScraperCacheRepository) {
         return result
     }
 
-    private suspend fun scrapeWithRetry(sourceId: String, word: String, maxAttempts: Int = 2): ScrapeEnrichment? {
+    private suspend fun scrapeWithRetry(sourceId: String, word: String, maxAttempts: Int = 1): ScrapeEnrichment? {
         repeat(maxAttempts) { attempt ->
             try {
                 val result = when (sourceId) {
