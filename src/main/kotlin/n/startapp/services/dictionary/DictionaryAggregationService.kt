@@ -134,7 +134,8 @@ class DictionaryAggregationService {
         // ── Pronunciations ────────────────────────────────────────────────
         // Collect from API clients (FreeDictionary provides UK/US entries)
         val apiPronunciations = apiResults.flatMap { it.pronunciations }
-        // Collect from scrapers (Cambridge/LDOCE have more accurate IPA + audio)
+        // Collect from scrapers (Cambridge/OED have more accurate IPA + audio)
+        // Keep pos metadata for per-POS disambiguation (homographs)
         val scraperPronunciations = scraperResults.flatMap { enrichment ->
             enrichment.pronunciations.map { p ->
                 PronunciationEntry(region = p.region, ipa = p.ipa, audioMp3Url = p.audioMp3Url)
@@ -142,6 +143,17 @@ class DictionaryAggregationService {
         }
         // Scraper data takes priority; API data fills gaps
         val pronunciations = mergePronunciations(scraperPronunciations + apiPronunciations)
+
+        // Per-POS pronunciation map (for homograph support): pos → list of PronunciationEntry
+        // Only scrapers provide pos-tagged pronunciations
+        val perPosPronunciations: Map<String, List<PronunciationEntry>> = scraperResults
+            .flatMap { it.pronunciations }
+            .filter { it.pos != null }
+            .groupBy { it.pos!!.lowercase().trim() }
+            .mapValues { (_, prons) ->
+                prons.map { p -> PronunciationEntry(region = p.region, ipa = p.ipa, audioMp3Url = p.audioMp3Url) }
+                    .let { mergePronunciations(it) }
+            }
 
         // Legacy fields for backward-compat
         val phonetic = pronunciations.firstOrNull { it.ipa != null }?.ipa
@@ -176,7 +188,7 @@ class DictionaryAggregationService {
         val allExamples = deduplicateExamples(scraperExamples + apiExamples).take(10)
 
         // ── Entries (grouped by POS for homograph support) ────────────────
-        val entries = buildEntries(allDefinitions, pronunciations, allSynonyms, allAntonyms)
+        val entries = buildEntries(allDefinitions, pronunciations, perPosPronunciations, allSynonyms, allAntonyms)
 
         return WordDetailResponse(
             word = word.trim(),
@@ -218,12 +230,13 @@ class DictionaryAggregationService {
     /**
      * Group deduplicated definitions by part-of-speech to produce [WordEntry] items.
      * Ordering follows standard lexicographic POS order (noun → verb → adjective → …).
-     * Global pronunciations, synonyms, and antonyms are shared across all entries
-     * (per-entry audio for true homographs is a future enhancement).
+     * If [perPosPronunciations] has data for a given POS (e.g., from Cambridge homograph entries),
+     * those pronunciations are used for that entry — enabling correct homograph display.
      */
     private fun buildEntries(
         definitions: List<DetailedDefinition>,
         pronunciations: List<PronunciationEntry>,
+        perPosPronunciations: Map<String, List<PronunciationEntry>> = emptyMap(),
         synonyms: List<String>,
         antonyms: List<String>
     ): List<WordEntry> {
@@ -242,12 +255,15 @@ class DictionaryAggregationService {
                 if (idx < 0) posOrder.size else idx
             }
             .mapIndexed { idx, (pos, defs) ->
+                // Use per-POS pronunciations for homograph support; fall back to global
+                val entryPronunciations = perPosPronunciations[pos]?.takeIf { it.isNotEmpty() }
+                    ?: pronunciations
                 WordEntry(
                     id = (idx + 1).toString(),
                     partOfSpeech = pos.ifBlank { null },
-                    phonetic = pronunciations.firstOrNull { it.ipa != null }?.ipa,
-                    audioUrl = pronunciations.firstOrNull { it.audioMp3Url != null }?.audioMp3Url,
-                    pronunciations = pronunciations,
+                    phonetic = entryPronunciations.firstOrNull { it.ipa != null }?.ipa,
+                    audioUrl = entryPronunciations.firstOrNull { it.audioMp3Url != null }?.audioMp3Url,
+                    pronunciations = entryPronunciations,
                     meanings = defs.map { def ->
                         EntryMeaning(
                             definition = def.definition,

@@ -16,7 +16,7 @@ class CambridgeScraper(private val httpClient: HttpClient) {
 
     companion object {
         const val SOURCE_ID = "CAMBRIDGE"
-        const val PARSER_VERSION = "v1"
+        const val PARSER_VERSION = "v2"
         private const val BASE_URL = "https://dictionary.cambridge.org"
         private const val RATE_LIMIT_MS = 1200L
         private val USER_AGENT =
@@ -77,54 +77,96 @@ class CambridgeScraper(private val httpClient: HttpClient) {
     internal fun parseHtml(word: String, url: String, html: String): ScrapeEnrichment? {
         val doc = Jsoup.parse(html)
 
-        // ── Pronunciations ────────────────────────────────────────────────
         val pronunciations = mutableListOf<ScrapedPronunciation>()
-
-        doc.select("span.uk.dpron-i").firstOrNull()?.let { el ->
-            val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
-            val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
-                ?.attr("src")?.prefixBase()
-            if (ipa != null || mp3 != null)
-                pronunciations += ScrapedPronunciation("uk", ipa, mp3)
-        }
-
-        doc.select("span.us.dpron-i").firstOrNull()?.let { el ->
-            val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
-            val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
-                ?.attr("src")?.prefixBase()
-            if (ipa != null || mp3 != null)
-                pronunciations += ScrapedPronunciation("us", ipa, mp3)
-        }
-
-        // ── Senses (grouped by div.dsense) ───────────────────────────────
         val senses = mutableListOf<ScrapedSense>()
         val allExamples = mutableListOf<String>()
 
-        doc.select("div.dsense").forEach { dsenseEl ->
-            val pos = dsenseEl.select("span.pos.dpos").firstOrNull()?.text()
-            val guideWord = dsenseEl.select("span.guideword.dsense_gw span").firstOrNull()?.text()
+        // ── Try per-homograph entry blocks (div.entry-body__el) ───────────
+        // Cambridge groups homographs into separate blocks, each with its own POS + pronunciation
+        val entryBlocks = doc.select("div.entry-body__el")
+        if (entryBlocks.isNotEmpty()) {
+            entryBlocks.forEach { entryEl ->
+                // POS for this homograph entry (from di-info header)
+                val entryPos = entryEl.select("div.di-info span.pos.dpos").firstOrNull()?.text()
+                    ?: entryEl.select("div.di-info .posgram .pos").firstOrNull()?.text()
 
-            dsenseEl.select("div.def-block.ddef_block").forEach { defBlock ->
-                val definition = defBlock.select("div.def.ddef_d").firstOrNull()
-                    ?.text()?.trimEnd(':')?.trim()
-                    ?.takeIf { it.isNotBlank() } ?: return@forEach
+                // Per-entry pronunciations (tagged with POS for homograph disambiguation)
+                entryEl.select("div.di-info span.uk.dpron-i").firstOrNull()?.let { el ->
+                    val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
+                    val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
+                        ?.attr("src")?.prefixBase()
+                    if (ipa != null || mp3 != null)
+                        pronunciations += ScrapedPronunciation("uk", ipa, mp3, pos = entryPos)
+                }
+                entryEl.select("div.di-info span.us.dpron-i").firstOrNull()?.let { el ->
+                    val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
+                    val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
+                        ?.attr("src")?.prefixBase()
+                    if (ipa != null || mp3 != null)
+                        pronunciations += ScrapedPronunciation("us", ipa, mp3, pos = entryPos)
+                }
 
-                val examples = defBlock.select("span.eg.deg")
-                    .map { it.text().trim() }.filter { it.isNotBlank() }
-                allExamples += examples
-
-                val level = defBlock.select("span.epp-xref").firstOrNull()?.text()
-                val grammar = defBlock.select("span.gram.dgram").firstOrNull()?.text()
-
-                senses += ScrapedSense(
-                    pos = pos, guideWord = guideWord,
-                    level = level, grammar = grammar,
-                    definition = definition, examples = examples
-                )
+                // Parse senses within this entry
+                entryEl.select("div.dsense").forEach { dsenseEl ->
+                    val pos = dsenseEl.select("span.pos.dpos").firstOrNull()?.text() ?: entryPos
+                    val guideWord = dsenseEl.select("span.guideword.dsense_gw span").firstOrNull()?.text()
+                    dsenseEl.select("div.def-block.ddef_block").forEach { defBlock ->
+                        val definition = defBlock.select("div.def.ddef_d").firstOrNull()
+                            ?.text()?.trimEnd(':')?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
+                        val examples = defBlock.select("span.eg.deg")
+                            .map { it.text().trim() }.filter { it.isNotBlank() }
+                        allExamples += examples
+                        senses += ScrapedSense(
+                            pos = pos, guideWord = guideWord,
+                            level = defBlock.select("span.epp-xref").firstOrNull()?.text(),
+                            grammar = defBlock.select("span.gram.dgram").firstOrNull()?.text(),
+                            definition = definition, examples = examples
+                        )
+                    }
+                }
             }
         }
 
-        // Fallback when no dsense blocks found
+        // ── Fallback: global pronunciation selectors if per-entry failed ──
+        if (pronunciations.isEmpty()) {
+            doc.select("span.uk.dpron-i").firstOrNull()?.let { el ->
+                val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
+                val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
+                    ?.attr("src")?.prefixBase()
+                if (ipa != null || mp3 != null)
+                    pronunciations += ScrapedPronunciation("uk", ipa, mp3)
+            }
+            doc.select("span.us.dpron-i").firstOrNull()?.let { el ->
+                val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
+                val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
+                    ?.attr("src")?.prefixBase()
+                if (ipa != null || mp3 != null)
+                    pronunciations += ScrapedPronunciation("us", ipa, mp3)
+            }
+        }
+
+        // ── Fallback: global dsense parsing if per-entry failed ──────────
+        if (senses.isEmpty()) {
+            doc.select("div.dsense").forEach { dsenseEl ->
+                val pos = dsenseEl.select("span.pos.dpos").firstOrNull()?.text()
+                val guideWord = dsenseEl.select("span.guideword.dsense_gw span").firstOrNull()?.text()
+                dsenseEl.select("div.def-block.ddef_block").forEach { defBlock ->
+                    val definition = defBlock.select("div.def.ddef_d").firstOrNull()
+                        ?.text()?.trimEnd(':')?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
+                    val examples = defBlock.select("span.eg.deg")
+                        .map { it.text().trim() }.filter { it.isNotBlank() }
+                    allExamples += examples
+                    senses += ScrapedSense(
+                        pos = pos, guideWord = guideWord,
+                        level = defBlock.select("span.epp-xref").firstOrNull()?.text(),
+                        grammar = defBlock.select("span.gram.dgram").firstOrNull()?.text(),
+                        definition = definition, examples = examples
+                    )
+                }
+            }
+        }
+
+        // Last-resort fallback
         if (senses.isEmpty()) {
             doc.select("div.def.ddef_d").forEach { el ->
                 val def = el.text().trimEnd(':').trim()

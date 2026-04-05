@@ -6,7 +6,8 @@ import kotlinx.serialization.Serializable
 data class ScrapedPronunciation(
     val region: String? = null,     // "uk" | "us" | null
     val ipa: String? = null,
-    val audioMp3Url: String? = null
+    val audioMp3Url: String? = null,
+    val pos: String? = null          // part of speech this pronunciation belongs to (for homographs)
 )
 
 @Serializable
