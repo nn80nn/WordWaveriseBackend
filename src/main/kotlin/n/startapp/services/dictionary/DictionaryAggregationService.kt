@@ -49,18 +49,19 @@ class DictionaryAggregationService {
         }
     }
 
-    /** All API clients for single-word queries */
+    /** All API clients for single-word queries.
+     *  Wiktionary is first so it isn't pushed out by the take() limit after scrapers fill up. */
     private val allApiClients: List<DictionaryApiClient> = listOf(
-        FreeDictionaryApiClient(httpClient),
         WiktionaryApiClient(httpClient),
+        FreeDictionaryApiClient(httpClient),
         WordsApiClient(httpClient),
         DataMuseApiClient(httpClient)
     )
 
     /** Phrase-safe API clients — only these support multi-word queries reliably */
     private val phraseApiClients: List<DictionaryApiClient> = listOf(
-        FreeDictionaryApiClient(httpClient),
-        WiktionaryApiClient(httpClient)
+        WiktionaryApiClient(httpClient),
+        FreeDictionaryApiClient(httpClient)
     )
 
     private val scraperService = ScraperService(ScraperCacheRepository())
@@ -174,7 +175,9 @@ class DictionaryAggregationService {
                 )
             }
         }
-        val allDefinitions = deduplicateDefinitions(scraperDefs + apiDefs).take(15)
+        // Increased from 15→30 so all sources (especially Wiktionary) are represented.
+        // Per-source dedup already caps at 8, so max total ≈ Cambridge(8)+Oxford(3)+Wiktionary(8)+FreeDictionary(8) = 27
+        val allDefinitions = deduplicateDefinitions(scraperDefs + apiDefs).take(30)
 
         // ── Synonyms / antonyms ───────────────────────────────────────────
         val allSynonyms = apiResults.flatMap { it.synonyms }
