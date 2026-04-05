@@ -76,6 +76,7 @@ fun Application.configureRouting() {
             }
 
             // Spelling suggestions (English) or translation candidates (Russian input)
+            // prefix=true → autocomplete while typing English (uses DataMuse wildcard)
             get("/suggest") {
                 val query = call.request.queryParameters["query"]
                     ?: throw BadRequestException("Query parameter 'query' is required")
@@ -84,7 +85,8 @@ fun Application.configureRouting() {
                     throw BadRequestException("Query parameter 'query' cannot be empty")
                 }
 
-                val result = suggestService.getSuggestions(query)
+                val prefix = call.request.queryParameters["prefix"]?.lowercase() == "true"
+                val result = suggestService.getSuggestions(query, prefix = prefix)
                 call.respond(ApiResponse.success(result))
             }
         }
