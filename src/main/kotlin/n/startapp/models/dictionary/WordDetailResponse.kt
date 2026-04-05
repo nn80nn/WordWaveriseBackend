@@ -37,7 +37,8 @@ data class WordEntry(
     val meanings: List<EntryMeaning> = emptyList(),
     val synonyms: List<String> = emptyList(),
     val antonyms: List<String> = emptyList(),
-    val examples: List<String> = emptyList()
+    val examples: List<String> = emptyList(),
+    val translation: String? = null                     // Russian translation for this POS (e.g. "свинец" for noun, "вести" for verb)
 )
 
 /**

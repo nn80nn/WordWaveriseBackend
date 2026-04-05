@@ -9,6 +9,8 @@ import io.ktor.client.plugins.logging.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import n.startapp.exceptions.NotFoundException
@@ -68,9 +70,13 @@ class DictionaryService {
         logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from multiple sources")
         val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase)
 
-        // Add Russian translation
-        val translation = getTranslation(normalizedWord)
-        val finalResult = aggregatedData.copy(translation = translation)
+        // Add Russian translation (word-level) + per-POS entry translations — run in parallel
+        val (translation, entriesWithTranslations) = coroutineScope {
+            val t = async { getTranslation(normalizedWord) }
+            val e = async { addEntryTranslations(normalizedWord, aggregatedData.entries) }
+            t.await() to e.await()
+        }
+        val finalResult = aggregatedData.copy(translation = translation, entries = entriesWithTranslations)
 
         // Cache the result
         cacheService.putWord(cacheKey, finalResult)
@@ -100,8 +106,10 @@ class DictionaryService {
             throw NotFoundException("Word '$word' not found (timeout)")
         }
 
-        cacheService.putWord(quickKey, aggregatedData)
-        return aggregatedData
+        val entriesWithTranslations = addEntryTranslations(normalizedWord, aggregatedData.entries)
+        val finalResult = aggregatedData.copy(entries = entriesWithTranslations)
+        cacheService.putWord(quickKey, finalResult)
+        return finalResult
     }
 
     /**
@@ -128,6 +136,25 @@ class DictionaryService {
                 )
             }
         )
+    }
+
+    /**
+     * Add Russian translations to each WordEntry using its part-of-speech as context.
+     * Calls are made in parallel so latency = ~1 MyMemory call regardless of entry count.
+     * Example: "lead (noun)" → "свинец", "lead (verb)" → "вести"
+     */
+    private suspend fun addEntryTranslations(word: String, entries: List<WordEntry>): List<WordEntry> = coroutineScope {
+        entries.map { entry ->
+            async {
+                val pos = entry.partOfSpeech ?: return@async entry
+                val raw = getTranslation("$word ($pos)") ?: return@async entry
+                // Clean: strip any parenthetical suffix MyMemory may add, take first 3 words
+                val translation = raw.substringBefore("(").trim()
+                    .split(" ").take(3).joinToString(" ")
+                    .takeIf { it.isNotBlank() }
+                entry.copy(translation = translation)
+            }
+        }.map { it.await() }
     }
 
     /**
