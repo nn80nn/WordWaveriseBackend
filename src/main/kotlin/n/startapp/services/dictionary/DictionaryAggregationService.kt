@@ -49,11 +49,18 @@ class DictionaryAggregationService {
         }
     }
 
-    private val apiClients: List<DictionaryApiClient> = listOf(
+    /** All API clients for single-word queries */
+    private val allApiClients: List<DictionaryApiClient> = listOf(
         FreeDictionaryApiClient(httpClient),
         WiktionaryApiClient(httpClient),
         WordsApiClient(httpClient),
         DataMuseApiClient(httpClient)
+    )
+
+    /** Phrase-safe API clients — only these support multi-word queries reliably */
+    private val phraseApiClients: List<DictionaryApiClient> = listOf(
+        FreeDictionaryApiClient(httpClient),
+        WiktionaryApiClient(httpClient)
     )
 
     private val scraperService = ScraperService(ScraperCacheRepository())
@@ -61,20 +68,23 @@ class DictionaryAggregationService {
     /**
      * Fetch word data from all API sources + scrapers in parallel and merge results.
      * @param skipScrapers if true, skip web scrapers for faster response (API data only)
+     * @param isPhrase if true, restricts to phrase-capable sources and skips scrapers
      * @throws NotFoundException if word not found in any source
      */
-    suspend fun aggregateWordData(word: String, skipScrapers: Boolean = false): WordDetailResponse {
-        if (skipScrapers) {
-            logger.info("Fetching word data for '$word' from ${apiClients.size} API sources only (quick mode)")
+    suspend fun aggregateWordData(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): WordDetailResponse {
+        val activeClients = if (isPhrase) phraseApiClients else allApiClients
+        val actuallySkipScrapers = skipScrapers || isPhrase
+        if (actuallySkipScrapers) {
+            logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from ${activeClients.size} API sources only")
         } else {
-            logger.info("Fetching word data for '$word' from ${apiClients.size} API sources + scrapers")
+            logger.info("Fetching word data for '$word' from ${activeClients.size} API sources + scrapers")
         }
 
         // Run API clients and scrapers in parallel
         val (apiResults, scraperResults) = coroutineScope {
-            val apis = async { fetchFromAllApiSources(word) }
+            val apis = async { fetchFromApiSources(word, activeClients) }
             val scrapers = async {
-                if (skipScrapers) return@async emptyList<n.startapp.models.scraper.ScrapeEnrichment>()
+                if (actuallySkipScrapers) return@async emptyList<n.startapp.models.scraper.ScrapeEnrichment>()
                 withTimeoutOrNull(12_000) {
                     try { scraperService.enrichWord(word) }
                     catch (e: Exception) {
@@ -101,8 +111,8 @@ class DictionaryAggregationService {
         return mergeResults(word, validApiResults, scraperResults)
     }
 
-    private suspend fun fetchFromAllApiSources(word: String): List<SourcedWordData?> = coroutineScope {
-        apiClients.map { client ->
+    private suspend fun fetchFromApiSources(word: String, clients: List<DictionaryApiClient>): List<SourcedWordData?> = coroutineScope {
+        clients.map { client ->
             async {
                 try { client.fetchWordData(word) }
                 catch (e: Exception) {

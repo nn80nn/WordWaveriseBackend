@@ -55,23 +55,25 @@ class DictionaryService {
      */
     suspend fun searchWordEnhanced(word: String): WordDetailResponse {
         val normalizedWord = word.trim().lowercase()
+        val isPhrase = normalizedWord.contains(' ')
+        val cacheKey = if (isPhrase) "phrase:$normalizedWord" else normalizedWord
 
         // Check cache first
-        cacheService.getWord(normalizedWord)?.let { cached ->
-            logger.info("Returning cached result for word: '$word'")
+        cacheService.getWord(cacheKey)?.let { cached ->
+            logger.info("Returning cached result for '${if (isPhrase) "phrase:" else ""}$word'")
             return cached
         }
 
-        // Fetch from multiple sources in parallel
-        logger.info("Fetching word '$word' from multiple sources")
-        val aggregatedData = aggregationService.aggregateWordData(normalizedWord)
+        // Phrase queries skip scrapers (Cambridge/Oxford don't handle multi-word)
+        logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from multiple sources")
+        val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase)
 
         // Add Russian translation
         val translation = getTranslation(normalizedWord)
         val finalResult = aggregatedData.copy(translation = translation)
 
         // Cache the result
-        cacheService.putWord(normalizedWord, finalResult)
+        cacheService.putWord(cacheKey, finalResult)
 
         return finalResult
     }
@@ -82,16 +84,17 @@ class DictionaryService {
      */
     suspend fun searchWordQuick(word: String): WordDetailResponse {
         val normalizedWord = word.trim().lowercase()
-        val quickKey = "quick:$normalizedWord"
+        val isPhrase = normalizedWord.contains(' ')
+        val quickKey = "quick:${if (isPhrase) "phrase:" else ""}$normalizedWord"
 
         cacheService.getWord(quickKey)?.let { cached ->
             logger.info("Returning cached quick result for word: '$word'")
             return cached
         }
 
-        logger.info("Quick-fetching word '$word' from API sources only")
+        logger.info("Quick-fetching '${if (isPhrase) "phrase" else "word"}' '$word' from API sources only")
         val aggregatedData = withTimeoutOrNull(5_000) {
-            aggregationService.aggregateWordData(normalizedWord, skipScrapers = true)
+            aggregationService.aggregateWordData(normalizedWord, skipScrapers = true, isPhrase = isPhrase)
         } ?: run {
             logger.warn("Quick fetch timed out for '$word' after 5s")
             throw NotFoundException("Word '$word' not found (timeout)")
