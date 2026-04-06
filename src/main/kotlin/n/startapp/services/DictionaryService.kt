@@ -71,21 +71,20 @@ class DictionaryService {
         logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from multiple sources")
         val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase)
 
-        // AI deduplication of flat definitions (runs in parallel with translations)
-        val (translation, entriesWithTranslations, cleanedDefinitions) = coroutineScope {
+        // AI selection of best definitions (preserves source attribution via index-based selection)
+        // + Russian translations — run in parallel
+        val (translation, entriesWithTranslations, selectedDefinitions) = coroutineScope {
             val t = async { getTranslation(normalizedWord) }
             val e = async { addEntryTranslations(normalizedWord, aggregatedData.entries) }
             val d = async {
-                if (aggregatedData.definitions.size > 3) {
+                if (aggregatedData.definitions.size > 5) {
                     try {
                         val rawTexts = aggregatedData.definitions.map { it.definition }
-                        val deduped = aiService.deduplicateDefinitions(normalizedWord, rawTexts)
-                        deduped.mapIndexed { i, defText ->
-                            aggregatedData.definitions.getOrNull(i)?.copy(definition = defText)
-                                ?: aggregatedData.definitions.first().copy(definition = defText)
-                        }
+                        val indices = aiService.selectBestDefinitionIndices(normalizedWord, rawTexts)
+                        indices.mapNotNull { aggregatedData.definitions.getOrNull(it - 1) }
+                            .ifEmpty { aggregatedData.definitions }
                     } catch (ex: Exception) {
-                        logger.warn("Definition deduplication failed for '$normalizedWord': ${ex.message}")
+                        logger.warn("AI definition selection failed for '$normalizedWord': ${ex.message}")
                         aggregatedData.definitions
                     }
                 } else aggregatedData.definitions
@@ -95,7 +94,7 @@ class DictionaryService {
         val finalResult = aggregatedData.copy(
             translation = translation,
             entries = entriesWithTranslations,
-            definitions = cleanedDefinitions
+            definitions = selectedDefinitions
         )
 
         // Cache the result

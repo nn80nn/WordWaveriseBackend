@@ -70,27 +70,33 @@ class AiService {
         return AiTextResponse(result = result)
     }
 
-    suspend fun deduplicateDefinitions(word: String, rawDefs: List<String>): List<String> {
-        if (rawDefs.size <= 3) return rawDefs
-        val defsText = rawDefs.take(8).mapIndexed { i, d -> "${i + 1}. $d" }.joinToString("\n")
+    /**
+     * Returns 1-based indices of the best/most distinct definitions from rawDefs.
+     * Using indices (not rewritten text) preserves the original source attribution.
+     * Falls back to first 5 indices on failure.
+     */
+    suspend fun selectBestDefinitionIndices(word: String, rawDefs: List<String>): List<Int> {
+        if (rawDefs.size <= 5) return rawDefs.indices.map { it + 1 }
+        val defsText = rawDefs.take(10).mapIndexed { i, d -> "${i + 1}. $d" }.joinToString("\n")
         val prompt = """
             Word: "$word"
-            Raw definitions from multiple sources:
+            Numbered definitions from multiple dictionary sources:
             $defsText
 
-            Select and rewrite the 3 most distinct, useful definitions. Remove duplicates.
-            Return ONLY a JSON array of 3 strings: ["def1", "def2", "def3"]
-            No extra text.
+            Select the 5 most distinct and useful definitions. Remove near-duplicates.
+            Return ONLY a JSON array of 1-based indices, e.g.: [1, 3, 5, 7, 9]
+            No extra text, no explanation.
         """.trimIndent()
         return try {
-            val raw = callAi(prompt, maxTokens = 300, temperature = 0.3)
+            val raw = callAi(prompt, maxTokens = 60, temperature = 0.2)
             val cleaned = raw.trim()
                 .removePrefix("```json").removePrefix("```")
                 .removeSuffix("```").trim()
-            lenientJson.decodeFromString<List<String>>(cleaned)
+            val indices = lenientJson.decodeFromString<List<Int>>(cleaned)
+            indices.filter { it in 1..rawDefs.size }
         } catch (e: Exception) {
-            logger.warn("deduplicateDefinitions failed for '$word': ${e.message}")
-            rawDefs.take(3)
+            logger.warn("selectBestDefinitionIndices failed for '$word': ${e.message}")
+            rawDefs.indices.take(5).map { it + 1 }   // fallback: keep first 5
         }
     }
 
