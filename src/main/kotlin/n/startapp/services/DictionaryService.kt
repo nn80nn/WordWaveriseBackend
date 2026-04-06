@@ -47,6 +47,7 @@ class DictionaryService {
 
     private val aggregationService = DictionaryAggregationService()
     private val cacheService = CacheService()
+    private val aiService = AiService()
 
     /**
      * Search for word with enhanced details from multiple sources
@@ -70,13 +71,32 @@ class DictionaryService {
         logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from multiple sources")
         val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase)
 
-        // Add Russian translation (word-level) + per-POS entry translations — run in parallel
-        val (translation, entriesWithTranslations) = coroutineScope {
+        // AI deduplication of flat definitions (runs in parallel with translations)
+        val (translation, entriesWithTranslations, cleanedDefinitions) = coroutineScope {
             val t = async { getTranslation(normalizedWord) }
             val e = async { addEntryTranslations(normalizedWord, aggregatedData.entries) }
-            t.await() to e.await()
+            val d = async {
+                if (aggregatedData.definitions.size > 3) {
+                    try {
+                        val rawTexts = aggregatedData.definitions.map { it.definition }
+                        val deduped = aiService.deduplicateDefinitions(normalizedWord, rawTexts)
+                        deduped.mapIndexed { i, defText ->
+                            aggregatedData.definitions.getOrNull(i)?.copy(definition = defText)
+                                ?: aggregatedData.definitions.first().copy(definition = defText)
+                        }
+                    } catch (ex: Exception) {
+                        logger.warn("Definition deduplication failed for '$normalizedWord': ${ex.message}")
+                        aggregatedData.definitions
+                    }
+                } else aggregatedData.definitions
+            }
+            Triple(t.await(), e.await(), d.await())
         }
-        val finalResult = aggregatedData.copy(translation = translation, entries = entriesWithTranslations)
+        val finalResult = aggregatedData.copy(
+            translation = translation,
+            entries = entriesWithTranslations,
+            definitions = cleanedDefinitions
+        )
 
         // Cache the result
         cacheService.putWord(cacheKey, finalResult)

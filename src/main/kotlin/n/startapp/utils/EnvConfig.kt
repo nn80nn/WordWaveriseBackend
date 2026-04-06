@@ -64,4 +64,5 @@ object EnvConfig {
     // AI configuration
     val aiDomen: String get() = get("AI_DOMEN", "")
     val aiApiKey: String get() = get("AI_API", "")
+    val aiModel: String get() = get("AI_MODEL", "llama-3.3-70b-versatile")
 }

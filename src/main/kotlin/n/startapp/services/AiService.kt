@@ -38,7 +38,7 @@ class AiService {
         return if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
     }
     private val aiApiKey: String get() = EnvConfig.aiApiKey
-    private val model = "gpt-5.2"
+    private val model: String get() = EnvConfig.aiModel
 
     suspend fun explain(word: String): AiTextResponse {
         val prompt = """
@@ -58,6 +58,40 @@ class AiService {
         """.trimIndent()
         val result = callAi(prompt)
         return AiTextResponse(result = result)
+    }
+
+    suspend fun quickSummary(word: String): AiTextResponse {
+        val prompt = """
+            Give a quick, helpful 2-sentence English explanation of the word "$word".
+            Then on a new line add: "RU: <brief Russian translation 1-3 words>".
+            Be concise and practical.
+        """.trimIndent()
+        val result = callAi(prompt, maxTokens = 150, temperature = 0.5)
+        return AiTextResponse(result = result)
+    }
+
+    suspend fun deduplicateDefinitions(word: String, rawDefs: List<String>): List<String> {
+        if (rawDefs.size <= 3) return rawDefs
+        val defsText = rawDefs.take(8).mapIndexed { i, d -> "${i + 1}. $d" }.joinToString("\n")
+        val prompt = """
+            Word: "$word"
+            Raw definitions from multiple sources:
+            $defsText
+
+            Select and rewrite the 3 most distinct, useful definitions. Remove duplicates.
+            Return ONLY a JSON array of 3 strings: ["def1", "def2", "def3"]
+            No extra text.
+        """.trimIndent()
+        return try {
+            val raw = callAi(prompt, maxTokens = 300, temperature = 0.3)
+            val cleaned = raw.trim()
+                .removePrefix("```json").removePrefix("```")
+                .removeSuffix("```").trim()
+            lenientJson.decodeFromString<List<String>>(cleaned)
+        } catch (e: Exception) {
+            logger.warn("deduplicateDefinitions failed for '$word': ${e.message}")
+            rawDefs.take(3)
+        }
     }
 
     suspend fun generateExercise(word: String): AiExerciseResponse {

@@ -16,6 +16,29 @@ private val logger = LoggerFactory.getLogger("AiRoutes")
 
 fun Application.aiRoutes(aiService: AiService) {
     routing {
+        // Public route — no auth required (used from SearchScreen without login)
+        route("/api/ai") {
+            get("/summary") {
+                val word = call.request.queryParameters["word"]?.trim()
+                if (word.isNullOrBlank()) throw BadRequestException("word parameter is required")
+                try {
+                    val result = aiService.quickSummary(word)
+                    call.respond(ApiResponse.success(result))
+                } catch (e: IllegalStateException) {
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        ApiResponse.error<Nothing>(e.message ?: "AI unavailable")
+                    )
+                } catch (e: Exception) {
+                    logger.error("AI summary failed for '$word': ${e.message}")
+                    call.respond(
+                        HttpStatusCode.InternalServerError,
+                        ApiResponse.error<Nothing>("Ошибка ИИ-сервиса")
+                    )
+                }
+            }
+        }
+
         authenticate("auth-jwt") {
             route("/api/ai") {
                 post("/explain") {
