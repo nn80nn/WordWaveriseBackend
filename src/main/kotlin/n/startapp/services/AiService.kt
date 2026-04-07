@@ -60,6 +60,27 @@ class AiService {
         return AiTextResponse(result = result)
     }
 
+    /**
+     * Translates an English word to Russian using AI.
+     * @param word The word or phrase to translate
+     * @param posHint Optional part-of-speech hint for context (e.g. "noun", "verb")
+     * @return Russian translation (1-3 words) or null on failure
+     */
+    suspend fun translateToRussian(word: String, posHint: String? = null): String? {
+        val context = if (posHint != null) "$word ($posHint)" else word
+        val prompt = "Translate the English word/phrase \"$context\" to Russian. Return ONLY 1-3 Russian words, no punctuation, no explanation."
+        return try {
+            callAi(prompt, maxTokens = 20, temperature = 0.1)
+                .trim()
+                .substringBefore("(").trim()
+                .split(Regex("\\s+")).take(3).joinToString(" ")
+                .takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            logger.debug("AI translation failed for '$context': ${e.message}")
+            null
+        }
+    }
+
     suspend fun quickSummary(word: String): AiTextResponse {
         val prompt = """
             Give a quick, helpful 2-sentence English explanation of the word "$word".

@@ -71,30 +71,16 @@ class DictionaryService {
         logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from multiple sources")
         val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase)
 
-        // AI selection of best definitions (preserves source attribution via index-based selection)
-        // + Russian translations — run in parallel
-        val (translation, entriesWithTranslations, selectedDefinitions) = coroutineScope {
-            val t = async { getTranslation(normalizedWord) }
+        // Russian translations — run in parallel (AI primary, MyMemory fallback)
+        val (translation, entriesWithTranslations) = coroutineScope {
+            val t = async { translateWord(normalizedWord) }
             val e = async { addEntryTranslations(normalizedWord, aggregatedData.entries) }
-            val d = async {
-                if (aggregatedData.definitions.size > 5) {
-                    try {
-                        val rawTexts = aggregatedData.definitions.map { it.definition }
-                        val indices = aiService.selectBestDefinitionIndices(normalizedWord, rawTexts)
-                        indices.mapNotNull { aggregatedData.definitions.getOrNull(it - 1) }
-                            .ifEmpty { aggregatedData.definitions }
-                    } catch (ex: Exception) {
-                        logger.warn("AI definition selection failed for '$normalizedWord': ${ex.message}")
-                        aggregatedData.definitions
-                    }
-                } else aggregatedData.definitions
-            }
-            Triple(t.await(), e.await(), d.await())
+            t.await() to e.await()
         }
         val finalResult = aggregatedData.copy(
             translation = translation,
-            entries = entriesWithTranslations,
-            definitions = selectedDefinitions
+            entries = entriesWithTranslations
+            // definitions kept as-is (all sources, no AI reduction)
         )
 
         // Cache the result
@@ -138,12 +124,17 @@ class DictionaryService {
     suspend fun searchWord(word: String): WordSearchResponse {
         val enhanced = searchWordEnhanced(word)
 
+        // Combine per-POS entry translations (e.g. "свинец | вести") so the search card
+        // can show all meanings at a glance; fall back to word-level translation.
+        val combinedTranslation = enhanced.entries.mapNotNull { it.translation }.distinct().take(3)
+            .joinToString(" | ").ifBlank { null } ?: enhanced.translation
+
         return WordSearchResponse(
             word = enhanced.word,
             phonetic = enhanced.phonetic,
             audioUrl = enhanced.audioUrl,
             pronunciations = enhanced.pronunciations,
-            translation = enhanced.translation,
+            translation = combinedTranslation,
             definitions = enhanced.definitions.map { def ->
                 Definition(
                     partOfSpeech = def.partOfSpeech,
@@ -159,15 +150,14 @@ class DictionaryService {
 
     /**
      * Add Russian translations to each WordEntry using its part-of-speech as context.
-     * Calls are made in parallel so latency = ~1 MyMemory call regardless of entry count.
+     * Calls are made in parallel so latency ≈ one AI call regardless of entry count.
      * Example: "lead (noun)" → "свинец", "lead (verb)" → "вести"
      */
     private suspend fun addEntryTranslations(word: String, entries: List<WordEntry>): List<WordEntry> = coroutineScope {
         entries.map { entry ->
             async {
                 val pos = entry.partOfSpeech ?: return@async entry
-                val raw = getTranslation("$word ($pos)") ?: return@async entry
-                // Clean: strip any parenthetical suffix MyMemory may add, take first 3 words
+                val raw = translateWord(word, pos) ?: return@async entry
                 val translation = raw.substringBefore("(").trim()
                     .split(" ").take(3).joinToString(" ")
                     .takeIf { it.isNotBlank() }
@@ -177,9 +167,15 @@ class DictionaryService {
     }
 
     /**
-     * Get Russian translation for a word
-     * @param word The word to translate
-     * @return Russian translation or null if translation fails
+     * Translate a word to Russian. Tries AI first; falls back to MyMemory on failure.
+     */
+    private suspend fun translateWord(word: String, posHint: String? = null): String? =
+        aiService.translateToRussian(word, posHint) ?: getTranslation(
+            if (posHint != null) "$word ($posHint)" else word
+        )
+
+    /**
+     * Get Russian translation via MyMemory API (fallback when AI is unavailable).
      */
     private suspend fun getTranslation(word: String): String? {
         return try {
@@ -195,7 +191,7 @@ class DictionaryService {
                 null
             }
         } catch (e: Exception) {
-            logger.debug("Translation failed for '$word': ${e.message}")
+            logger.debug("MyMemory translation failed for '$word': ${e.message}")
             null
         }
     }
