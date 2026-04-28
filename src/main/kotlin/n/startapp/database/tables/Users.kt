@@ -10,6 +10,7 @@ import java.time.Instant
 object Users : Table("users") {
     val id = integer("id").autoIncrement()
     val email = varchar("email", 255).uniqueIndex()
+    val login = varchar("login", 50).nullable().uniqueIndex()
     val passwordHash = varchar("password_hash", 255)
     val googleId = varchar("google_id", 255).nullable().uniqueIndex()
     val createdAt = timestamp("created_at").clientDefault { Instant.now() }

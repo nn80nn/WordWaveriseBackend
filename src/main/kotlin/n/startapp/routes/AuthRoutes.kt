@@ -40,6 +40,9 @@ data class ChangePasswordRequest(val currentPassword: String, val newPassword: S
 @Serializable
 data class ChangeEmailRequest(val newEmail: String, val password: String)
 
+@Serializable
+data class ChangeLoginRequest(val login: String, val password: String)
+
 fun Route.authRoutes() {
     val userRepository = UserRepository()
 
@@ -66,9 +69,18 @@ fun Route.authRoutes() {
                 throw BadRequestException("User with this email already exists")
             }
 
+            // Validate and resolve login/nickname
+            val resolvedLogin: String? = if (!request.login.isNullOrBlank()) {
+                val l = request.login.trim()
+                if (l.length < 3 || l.length > 30) throw BadRequestException("Login must be 3–30 characters")
+                if (!l.matches(Regex("[a-zA-Z0-9_]+"))) throw BadRequestException("Login may only contain letters, digits and underscores")
+                if (userRepository.existsByLogin(l)) throw BadRequestException("This login is already taken")
+                l
+            } else null
+
             // Hash password and create user
             val passwordHash = PasswordUtil.hashPassword(request.password)
-            val user = userRepository.create(request.email, passwordHash)
+            val user = userRepository.create(request.email, passwordHash, resolvedLogin)
                 ?: throw Exception("Failed to create user")
 
             // Generate JWT token
@@ -220,6 +232,38 @@ fun Route.authRoutes() {
                 val newToken = JwtUtil.generateToken(updatedUser)
 
                 call.respond(ApiResponse.success(AuthResponse(token = newToken, user = updatedUser.toDTO())))
+            }
+
+            // Change login/nickname
+            post("/change-login") {
+                val principal = call.principal<JWTPrincipal>()
+                val userId = principal?.payload?.getClaim("userId")?.asInt()
+                    ?: throw UnauthorizedException("Invalid token")
+
+                val request = call.receive<ChangeLoginRequest>()
+                if (request.login.isBlank() || request.password.isBlank()) {
+                    throw BadRequestException("Login and password are required")
+                }
+
+                val newLogin = request.login.trim()
+                if (newLogin.length < 3 || newLogin.length > 30) throw BadRequestException("Login must be 3–30 characters")
+                if (!newLogin.matches(Regex("[a-zA-Z0-9_]+"))) throw BadRequestException("Login may only contain letters, digits and underscores")
+
+                val user = userRepository.findById(userId)
+                    ?: throw UnauthorizedException("User not found")
+
+                if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
+                    throw UnauthorizedException("Password is incorrect")
+                }
+
+                if (userRepository.existsByLogin(newLogin) && user.login != newLogin) {
+                    throw BadRequestException("This login is already taken")
+                }
+
+                userRepository.updateLogin(userId, newLogin)
+                val updatedUser = userRepository.findById(userId)!!
+
+                call.respond(ApiResponse.success(mapOf("user" to updatedUser.toDTO())))
             }
         }
     }

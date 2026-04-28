@@ -6,36 +6,26 @@ import n.startapp.models.auth.User
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 
-/**
- * Repository for User CRUD operations
- */
 class UserRepository {
 
-    /**
-     * Convert ResultRow to User model
-     */
     private fun resultRowToUser(row: ResultRow): User = User(
         id = row[Users.id],
         email = row[Users.email],
+        login = row[Users.login],
         passwordHash = row[Users.passwordHash],
         googleId = row[Users.googleId],
         createdAt = row[Users.createdAt]
     )
 
-    /**
-     * Create a new user
-     */
-    suspend fun create(email: String, passwordHash: String): User? = dbQuery {
+    suspend fun create(email: String, passwordHash: String, login: String? = null): User? = dbQuery {
         val insertStatement = Users.insert {
             it[Users.email] = email
             it[Users.passwordHash] = passwordHash
+            it[Users.login] = login
         }
         insertStatement.resultedValues?.singleOrNull()?.let(::resultRowToUser)
     }
 
-    /**
-     * Find user by email
-     */
     suspend fun findByEmail(email: String): User? = dbQuery {
         Users.selectAll()
             .where { Users.email eq email }
@@ -43,9 +33,6 @@ class UserRepository {
             .singleOrNull()
     }
 
-    /**
-     * Find user by ID
-     */
     suspend fun findById(id: Int): User? = dbQuery {
         Users.selectAll()
             .where { Users.id eq id }
@@ -53,13 +40,12 @@ class UserRepository {
             .singleOrNull()
     }
 
-    /**
-     * Check if user with email exists
-     */
     suspend fun existsByEmail(email: String): Boolean = dbQuery {
-        Users.selectAll()
-            .where { Users.email eq email }
-            .count() > 0
+        Users.selectAll().where { Users.email eq email }.count() > 0
+    }
+
+    suspend fun existsByLogin(login: String): Boolean = dbQuery {
+        Users.selectAll().where { Users.login eq login }.count() > 0
     }
 
     suspend fun findByGoogleId(googleId: String): User? = dbQuery {
@@ -70,12 +56,10 @@ class UserRepository {
     }
 
     suspend fun findOrCreateByGoogle(email: String, googleId: String): User = dbQuery {
-        // already linked by googleId
         Users.selectAll().where { Users.googleId eq googleId }
             .map(::resultRowToUser)
             .singleOrNull()
             ?: run {
-                // existing email account — link googleId
                 val existing = Users.selectAll().where { Users.email eq email }
                     .map(::resultRowToUser)
                     .singleOrNull()
@@ -83,11 +67,12 @@ class UserRepository {
                     Users.update({ Users.id eq existing.id }) { it[Users.googleId] = googleId }
                     existing.copy(googleId = googleId)
                 } else {
-                    // brand-new user via Google
+                    val generatedLogin = generateLoginFromEmail(email)
                     val stmt = Users.insert {
                         it[Users.email] = email
                         it[Users.passwordHash] = ""
                         it[Users.googleId] = googleId
+                        it[Users.login] = generatedLogin
                     }
                     stmt.resultedValues!!.first().let(::resultRowToUser)
                 }
@@ -102,10 +87,15 @@ class UserRepository {
         Users.update({ Users.id eq id }) { it[email] = newEmail }
     }
 
-    /**
-     * Delete user by ID
-     */
+    suspend fun updateLogin(id: Int, newLogin: String) = dbQuery {
+        Users.update({ Users.id eq id }) { it[login] = newLogin }
+    }
+
     suspend fun delete(id: Int): Boolean = dbQuery {
         Users.deleteWhere { Users.id eq id } > 0
+    }
+
+    private fun generateLoginFromEmail(email: String): String {
+        return email.substringBefore("@").replace(Regex("[^a-zA-Z0-9_]"), "_").take(30)
     }
 }
