@@ -18,6 +18,7 @@ class UserRepository {
         id = row[Users.id],
         email = row[Users.email],
         passwordHash = row[Users.passwordHash],
+        googleId = row[Users.googleId],
         createdAt = row[Users.createdAt]
     )
 
@@ -59,6 +60,46 @@ class UserRepository {
         Users.selectAll()
             .where { Users.email eq email }
             .count() > 0
+    }
+
+    suspend fun findByGoogleId(googleId: String): User? = dbQuery {
+        Users.selectAll()
+            .where { Users.googleId eq googleId }
+            .map(::resultRowToUser)
+            .singleOrNull()
+    }
+
+    suspend fun findOrCreateByGoogle(email: String, googleId: String): User = dbQuery {
+        // already linked by googleId
+        Users.selectAll().where { Users.googleId eq googleId }
+            .map(::resultRowToUser)
+            .singleOrNull()
+            ?: run {
+                // existing email account — link googleId
+                val existing = Users.selectAll().where { Users.email eq email }
+                    .map(::resultRowToUser)
+                    .singleOrNull()
+                if (existing != null) {
+                    Users.update({ Users.id eq existing.id }) { it[Users.googleId] = googleId }
+                    existing.copy(googleId = googleId)
+                } else {
+                    // brand-new user via Google
+                    val stmt = Users.insert {
+                        it[Users.email] = email
+                        it[Users.passwordHash] = ""
+                        it[Users.googleId] = googleId
+                    }
+                    stmt.resultedValues!!.first().let(::resultRowToUser)
+                }
+            }
+    }
+
+    suspend fun updatePassword(id: Int, newHash: String) = dbQuery {
+        Users.update({ Users.id eq id }) { it[passwordHash] = newHash }
+    }
+
+    suspend fun updateEmail(id: Int, newEmail: String) = dbQuery {
+        Users.update({ Users.id eq id }) { it[email] = newEmail }
     }
 
     /**
