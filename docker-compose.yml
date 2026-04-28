@@ -10,8 +10,6 @@ services:
     # image: ghcr.io/${GITHUB_USERNAME}/wordwaverisebackend:latest
     container_name: wordwaverise-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     environment:
       - DB_URL=jdbc:postgresql://db:5432/${POSTGRES_DB}
       - DB_USER=${POSTGRES_USER}
