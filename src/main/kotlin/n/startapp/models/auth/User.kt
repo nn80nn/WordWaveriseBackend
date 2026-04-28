@@ -10,6 +10,7 @@ data class User(
     val id: Int,
     val email: String,
     val passwordHash: String,
+    val googleId: String? = null,
     val createdAt: Instant
 )
 
@@ -48,6 +49,14 @@ data class LoginRequest(
 data class AuthResponse(
     val token: String,
     val user: UserDTO
+)
+
+/**
+ * Google OAuth request — id_token from Google Identity Services
+ */
+@Serializable
+data class GoogleAuthRequest(
+    val idToken: String
 )
 
 /**
