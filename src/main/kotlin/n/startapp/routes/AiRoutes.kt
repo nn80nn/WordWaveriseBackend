@@ -16,7 +16,6 @@ private val logger = LoggerFactory.getLogger("AiRoutes")
 
 fun Application.aiRoutes(aiService: AiService) {
     routing {
-        // Public route — no auth required (used from SearchScreen without login)
         route("/api/ai") {
             get("/summary") {
                 val word = call.request.queryParameters["word"]?.trim()
@@ -31,6 +30,26 @@ fun Application.aiRoutes(aiService: AiService) {
                     )
                 } catch (e: Exception) {
                     logger.error("AI summary failed for '$word': ${e.message}")
+                    call.respond(
+                        HttpStatusCode.InternalServerError,
+                        ApiResponse.error<Nothing>("Ошибка ИИ-сервиса")
+                    )
+                }
+            }
+
+            post("/exercise") {
+                val request = call.receive<AiWordRequest>()
+                if (request.word.isBlank()) throw BadRequestException("Word is required")
+                try {
+                    val result = aiService.generateExercise(request.word.trim())
+                    call.respond(ApiResponse.success(result))
+                } catch (e: IllegalStateException) {
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        ApiResponse.error<Nothing>(e.message ?: "AI service unavailable")
+                    )
+                } catch (e: Exception) {
+                    logger.error("AI exercise failed for '${request.word}': ${e.message}")
                     call.respond(
                         HttpStatusCode.InternalServerError,
                         ApiResponse.error<Nothing>("Ошибка ИИ-сервиса")
@@ -81,25 +100,6 @@ fun Application.aiRoutes(aiService: AiService) {
                     }
                 }
 
-                post("/exercise") {
-                    val request = call.receive<AiWordRequest>()
-                    if (request.word.isBlank()) throw BadRequestException("Word is required")
-                    try {
-                        val result = aiService.generateExercise(request.word.trim())
-                        call.respond(ApiResponse.success(result))
-                    } catch (e: IllegalStateException) {
-                        call.respond(
-                            HttpStatusCode.ServiceUnavailable,
-                            ApiResponse.error<Nothing>(e.message ?: "AI service unavailable")
-                        )
-                    } catch (e: Exception) {
-                        logger.error("AI exercise failed for '${request.word}': ${e.message}")
-                        call.respond(
-                            HttpStatusCode.InternalServerError,
-                            ApiResponse.error<Nothing>("Ошибка ИИ-сервиса")
-                        )
-                    }
-                }
             }
         }
     }
