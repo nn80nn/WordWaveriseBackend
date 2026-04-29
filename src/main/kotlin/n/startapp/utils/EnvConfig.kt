@@ -68,4 +68,7 @@ object EnvConfig {
 
     // Google OAuth
     val googleClientId: String get() = get("GOOGLE_CLIENT_ID", "")
+
+    // Admin panel
+    val adminSecret: String get() = get("ADMIN_SECRET", "")
 }

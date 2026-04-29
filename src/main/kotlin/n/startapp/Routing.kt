@@ -2,12 +2,20 @@ package n.startapp
 
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.auth.*
+import io.ktor.server.auth.jwt.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import n.startapp.database.DatabaseFactory.dbQuery
+import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.SavedWords
 import n.startapp.exceptions.BadRequestException
+import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
 import n.startapp.models.HealthStatus
+import n.startapp.models.auth.UserStats
+import n.startapp.routes.adminRoutes
 import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
@@ -16,6 +24,8 @@ import n.startapp.routes.savedWordsRoutes
 import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
 import n.startapp.services.SuggestService
+import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 
 fun Application.configureRouting() {
     val dictionaryService = DictionaryService()
@@ -115,8 +125,34 @@ fun Application.configureRouting() {
 
         // Category routes (protected)
         categoryRoutes()
+
+        // User stats (protected)
+        authenticate("auth-jwt") {
+            get("/api/user/stats") {
+                val principal = call.principal<JWTPrincipal>()
+                val userId = principal?.payload?.getClaim("userId")?.asInt()
+                    ?: throw UnauthorizedException("Invalid token")
+
+                val stats = dbQuery {
+                    val wordsSaved = SavedWords.selectAll()
+                        .where { SavedWords.userId eq userId }
+                        .count()
+                    val cardsReviewed = Flashcards.selectAll()
+                        .where { (Flashcards.userId eq userId) and Flashcards.lastReviewed.isNotNull() }
+                        .count()
+                    UserStats(
+                        wordsSaved = wordsSaved,
+                        cardsReviewed = cardsReviewed
+                    )
+                }
+                call.respond(ApiResponse.success(stats))
+            }
+        }
     }
 
     // AI routes (protected)
     aiRoutes(aiService)
+
+    // Admin routes
+    adminRoutes()
 }

@@ -44,6 +44,17 @@ data class GoogleAuthRequest(
     val idToken: String
 )
 
+@Serializable
+data class UserStats(
+    val wordsSaved: Long,
+    val cardsReviewed: Long,
+    val wordsMastered: Long = 0L,
+    val successRate: Long = 0L,
+    val currentStreak: Long = 0L,
+    val longestStreak: Long = 0L,
+    val aiExamplesGenerated: Long = 0L
+)
+
 fun User.toDTO(): UserDTO = UserDTO(
     id = id,
     email = email,
