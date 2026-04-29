@@ -5,6 +5,7 @@ import n.startapp.database.tables.Users
 import n.startapp.models.auth.User
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
 
 class UserRepository {
 
@@ -93,6 +94,33 @@ class UserRepository {
 
     suspend fun delete(id: Int): Boolean = dbQuery {
         Users.deleteWhere { Users.id eq id } > 0
+    }
+
+    suspend fun findAll(search: String? = null, limit: Int = 50, offset: Long = 0): List<User> = dbQuery {
+        val query = if (!search.isNullOrBlank()) {
+            val pattern = "%${search.lowercase()}%"
+            Users.selectAll().where {
+                (Users.email.lowerCase() like pattern) or
+                (Users.login.lowerCase() like pattern)
+            }
+        } else {
+            Users.selectAll()
+        }
+        query.orderBy(Users.id to SortOrder.DESC)
+            .limit(limit, offset)
+            .map(::resultRowToUser)
+    }
+
+    suspend fun countAll(search: String? = null): Long = dbQuery {
+        if (!search.isNullOrBlank()) {
+            val pattern = "%${search.lowercase()}%"
+            Users.selectAll().where {
+                (Users.email.lowerCase() like pattern) or
+                (Users.login.lowerCase() like pattern)
+            }.count()
+        } else {
+            Users.selectAll().count()
+        }
     }
 
     private fun generateLoginFromEmail(email: String): String {
