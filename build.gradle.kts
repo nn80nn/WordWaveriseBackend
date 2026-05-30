@@ -69,3 +69,21 @@ dependencies {
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 }
+
+tasks.withType<Test> {
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = false
+        afterSuite(KotlinClosure2({ desc: TestDescriptor, result: TestResult ->
+            if (desc.parent == null) {
+                println("\n========================================")
+                println("  Test Results: ${result.resultType}")
+                println("  Tests run   : ${result.testCount}")
+                println("  Passed      : ${result.successfulTestCount}")
+                println("  Skipped     : ${result.skippedTestCount}")
+                println("  Failed      : ${result.failedTestCount}")
+                println("========================================\n")
+            }
+        }))
+    }
+}
