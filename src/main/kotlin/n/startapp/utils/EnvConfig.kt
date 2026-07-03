@@ -71,4 +71,11 @@ object EnvConfig {
 
     // Admin panel
     val adminSecret: String get() = get("ADMIN_SECRET", "")
+
+    // Resend (transactional email)
+    val resendApiKey: String get() = get("RESEND_API_KEY", "")
+    val resendFromEmail: String get() = get("RESEND_FROM_EMAIL", "WordWaverise <noreply@wordwaverise.com>")
+
+    // Account deletion grace period
+    val accountDeletionGraceDays: Int get() = getInt("ACCOUNT_DELETION_GRACE_DAYS", 30)
 }

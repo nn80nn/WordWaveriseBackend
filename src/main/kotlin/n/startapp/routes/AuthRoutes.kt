@@ -24,15 +24,24 @@ import n.startapp.models.auth.AuthResponse
 import n.startapp.models.auth.GoogleAuthRequest
 import n.startapp.models.auth.LoginRequest
 import n.startapp.models.auth.RegisterRequest
+import n.startapp.models.auth.RegisterResponse
+import n.startapp.models.auth.RequestDeletionRequest
+import n.startapp.models.auth.ResendVerificationRequest
+import n.startapp.models.auth.VerifyEmailRequest
 import n.startapp.models.auth.toDTO
 import n.startapp.repositories.UserRepository
+import n.startapp.services.EmailService
 import n.startapp.utils.EnvConfig
 import n.startapp.utils.JwtUtil
 import n.startapp.utils.PasswordUtil
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 private val httpClient = HttpClient(CIO) {
     install(ContentNegotiation) { json() }
 }
+
+private fun generateVerificationCode(): String = (100000..999999).random().toString()
 
 @Serializable
 data class ChangePasswordRequest(val currentPassword: String, val newPassword: String)
@@ -45,6 +54,7 @@ data class ChangeLoginRequest(val login: String, val password: String)
 
 fun Route.authRoutes() {
     val userRepository = UserRepository()
+    val emailService = EmailService()
 
     route("/api/auth") {
         // Register endpoint
@@ -78,24 +88,66 @@ fun Route.authRoutes() {
                 l
             } else null
 
-            // Hash password and create user
+            // Hash password, generate a verification code and create the (unverified) user
             val passwordHash = PasswordUtil.hashPassword(request.password)
-            val user = userRepository.create(request.email, passwordHash, resolvedLogin)
+            val code = generateVerificationCode()
+            val expiresAt = Instant.now().plus(15, ChronoUnit.MINUTES)
+            val user = userRepository.create(request.email, passwordHash, resolvedLogin, code, expiresAt)
                 ?: throw Exception("Failed to create user")
 
-            // Generate JWT token
-            val token = JwtUtil.generateToken(user)
+            emailService.sendVerificationCode(user.email, code)
 
-            // Return response
             call.respond(
                 HttpStatusCode.Created,
                 ApiResponse.success(
-                    AuthResponse(
-                        token = token,
-                        user = user.toDTO()
+                    RegisterResponse(
+                        message = "Verification code sent",
+                        email = user.email
                     )
                 )
             )
+        }
+
+        // Verify email with the 6-digit code
+        post("/verify-email") {
+            val request = call.receive<VerifyEmailRequest>()
+            if (request.email.isBlank() || request.code.isBlank()) {
+                throw BadRequestException("Email and code are required")
+            }
+
+            val user = userRepository.findByEmail(request.email)
+                ?: throw BadRequestException("Invalid email or code")
+
+            if (user.emailVerified) throw BadRequestException("Email already verified")
+
+            val expiresAt = user.verificationCodeExpiresAt
+            if (user.verificationCode != request.code || expiresAt == null || Instant.now().isAfter(expiresAt)) {
+                throw BadRequestException("Invalid or expired code")
+            }
+
+            userRepository.verifyEmail(user.id)
+            val verifiedUser = userRepository.findById(user.id)!!
+            val token = JwtUtil.generateToken(verifiedUser)
+
+            call.respond(ApiResponse.success(AuthResponse(token = token, user = verifiedUser.toDTO())))
+        }
+
+        // Resend a fresh verification code
+        post("/resend-verification") {
+            val request = call.receive<ResendVerificationRequest>()
+            if (request.email.isBlank()) throw BadRequestException("Email is required")
+
+            val user = userRepository.findByEmail(request.email)
+                ?: throw BadRequestException("Invalid email")
+
+            if (user.emailVerified) throw BadRequestException("Email already verified")
+
+            val code = generateVerificationCode()
+            val expiresAt = Instant.now().plus(15, ChronoUnit.MINUTES)
+            userRepository.setVerificationCode(user.id, code, expiresAt)
+            emailService.sendVerificationCode(user.email, code)
+
+            call.respond(ApiResponse.success(mapOf("message" to "Verification code resent")))
         }
 
         // Google OAuth endpoint
@@ -147,6 +199,10 @@ fun Route.authRoutes() {
 
             if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
                 throw UnauthorizedException("Invalid email or password")
+            }
+
+            if (!user.emailVerified) {
+                throw UnauthorizedException("Email not verified")
             }
 
             val token = JwtUtil.generateToken(user)
@@ -261,6 +317,44 @@ fun Route.authRoutes() {
                 }
 
                 userRepository.updateLogin(userId, newLogin)
+                val updatedUser = userRepository.findById(userId)!!
+
+                call.respond(ApiResponse.success(mapOf("user" to updatedUser.toDTO())))
+            }
+
+            // Request account deletion (delayed)
+            post("/request-deletion") {
+                val principal = call.principal<JWTPrincipal>()
+                val userId = principal?.payload?.getClaim("userId")?.asInt()
+                    ?: throw UnauthorizedException("Invalid token")
+
+                val request = call.receive<RequestDeletionRequest>()
+                if (request.password.isBlank()) {
+                    throw BadRequestException("Password is required")
+                }
+
+                val user = userRepository.findById(userId)
+                    ?: throw UnauthorizedException("User not found")
+
+                if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
+                    throw UnauthorizedException("Password is incorrect")
+                }
+
+                val scheduledFor = Instant.now().plus(EnvConfig.accountDeletionGraceDays.toLong(), ChronoUnit.DAYS)
+                userRepository.requestDeletion(userId, scheduledFor)
+                emailService.sendDeletionScheduledEmail(user.email, scheduledFor)
+
+                val updatedUser = userRepository.findById(userId)!!
+                call.respond(ApiResponse.success(mapOf("user" to updatedUser.toDTO())))
+            }
+
+            // Cancel a pending account deletion
+            post("/cancel-deletion") {
+                val principal = call.principal<JWTPrincipal>()
+                val userId = principal?.payload?.getClaim("userId")?.asInt()
+                    ?: throw UnauthorizedException("Invalid token")
+
+                userRepository.cancelDeletion(userId)
                 val updatedUser = userRepository.findById(userId)!!
 
                 call.respond(ApiResponse.success(mapOf("user" to updatedUser.toDTO())))

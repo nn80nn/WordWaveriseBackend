@@ -5,7 +5,9 @@ import n.startapp.database.tables.Users
 import n.startapp.models.auth.User
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
+import java.time.Instant
 
 class UserRepository {
 
@@ -15,14 +17,28 @@ class UserRepository {
         login = row[Users.login],
         passwordHash = row[Users.passwordHash],
         googleId = row[Users.googleId],
-        createdAt = row[Users.createdAt]
+        createdAt = row[Users.createdAt],
+        emailVerified = row[Users.emailVerified],
+        verificationCode = row[Users.verificationCode],
+        verificationCodeExpiresAt = row[Users.verificationCodeExpiresAt],
+        deletionRequestedAt = row[Users.deletionRequestedAt],
+        deletionScheduledFor = row[Users.deletionScheduledFor]
     )
 
-    suspend fun create(email: String, passwordHash: String, login: String? = null): User? = dbQuery {
+    suspend fun create(
+        email: String,
+        passwordHash: String,
+        login: String? = null,
+        verificationCode: String? = null,
+        verificationCodeExpiresAt: Instant? = null
+    ): User? = dbQuery {
         val insertStatement = Users.insert {
             it[Users.email] = email
             it[Users.passwordHash] = passwordHash
             it[Users.login] = login
+            it[Users.emailVerified] = verificationCode == null
+            it[Users.verificationCode] = verificationCode
+            it[Users.verificationCodeExpiresAt] = verificationCodeExpiresAt
         }
         insertStatement.resultedValues?.singleOrNull()?.let(::resultRowToUser)
     }
@@ -90,6 +106,41 @@ class UserRepository {
 
     suspend fun updateLogin(id: Int, newLogin: String) = dbQuery {
         Users.update({ Users.id eq id }) { it[login] = newLogin }
+    }
+
+    suspend fun setVerificationCode(id: Int, code: String, expiresAt: Instant) = dbQuery {
+        Users.update({ Users.id eq id }) {
+            it[verificationCode] = code
+            it[verificationCodeExpiresAt] = expiresAt
+        }
+    }
+
+    suspend fun verifyEmail(id: Int) = dbQuery {
+        Users.update({ Users.id eq id }) {
+            it[emailVerified] = true
+            it[verificationCode] = null
+            it[verificationCodeExpiresAt] = null
+        }
+    }
+
+    suspend fun requestDeletion(id: Int, scheduledFor: Instant) = dbQuery {
+        Users.update({ Users.id eq id }) {
+            it[deletionRequestedAt] = Instant.now()
+            it[deletionScheduledFor] = scheduledFor
+        }
+    }
+
+    suspend fun cancelDeletion(id: Int) = dbQuery {
+        Users.update({ Users.id eq id }) {
+            it[deletionRequestedAt] = null
+            it[deletionScheduledFor] = null
+        }
+    }
+
+    suspend fun findDueForDeletion(before: Instant): List<User> = dbQuery {
+        Users.selectAll()
+            .where { (Users.deletionScheduledFor less before) }
+            .map(::resultRowToUser)
     }
 
     suspend fun delete(id: Int): Boolean = dbQuery {
