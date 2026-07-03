@@ -23,6 +23,10 @@ services:
       - APP_ENV=production
       - AI_DOMEN=${AI_DOMEN}
       - AI_API=${AI_API}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - RESEND_FROM_EMAIL=${RESEND_FROM_EMAIL}
+      - ACCOUNT_DELETION_GRACE_DAYS=${ACCOUNT_DELETION_GRACE_DAYS}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     depends_on:
       db:
         condition: service_healthy
