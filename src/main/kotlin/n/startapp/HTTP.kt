@@ -21,7 +21,7 @@ fun Application.configureHTTP() {
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Accept)
-        allowHeader("MyCustomHeader")
+        allowHeader("X-Admin-Secret")
 
         // Разрешить credentials (cookies, authorization headers)
         allowCredentials = true
