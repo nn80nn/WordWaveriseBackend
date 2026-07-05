@@ -38,7 +38,18 @@ class EmailService {
     }
 
     private val apiKey: String get() = EnvConfig.resendApiKey
-    private val fromEmail: String get() = EnvConfig.resendFromEmail
+
+    // Build the "Name <email>" from-header in code rather than trusting an env var to carry a
+    // space + angle brackets intact through Dokploy's UI — a bare address is enough to configure.
+    // Accepts "email@x.com", "<email@x.com>", or a full "Name <email@x.com>" and always produces
+    // a valid Resend from-header.
+    private val fromEmail: String get() {
+        val raw = EnvConfig.resendFromEmail.trim()
+        val match = Regex("^(.*)<(.+@.+)>$").find(raw)
+        val name = match?.groupValues?.get(1)?.trim().orEmpty()
+        val email = match?.groupValues?.get(2)?.trim() ?: raw.trim('<', '>').trim()
+        return if (name.isNotEmpty()) "$name <$email>" else "WordWaverise <$email>"
+    }
 
     suspend fun sendVerificationCode(email: String, code: String) {
         val html = """
