@@ -27,6 +27,7 @@ services:
       - RESEND_FROM_EMAIL=${RESEND_FROM_EMAIL}
       - ACCOUNT_DELETION_GRACE_DAYS=${ACCOUNT_DELETION_GRACE_DAYS}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - ADMIN_SECRET=${ADMIN_SECRET}
     depends_on:
       db:
         condition: service_healthy
