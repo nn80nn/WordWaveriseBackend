@@ -10,12 +10,14 @@ import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
+import n.startapp.database.tables.TestingRequests
 import n.startapp.database.tables.Users
 import n.startapp.exceptions.BadRequestException
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.ApiResponse
 import n.startapp.models.auth.toDTO
 import n.startapp.repositories.UserRepository
+import n.startapp.services.EmailService
 import n.startapp.utils.EnvConfig
 import n.startapp.utils.PasswordUtil
 import org.jetbrains.exposed.sql.*
@@ -69,6 +71,17 @@ data class AdminChangeEmailRequest(val email: String)
 @Serializable
 data class AdminChangeLoginRequest(val login: String)
 
+@Serializable
+data class AdminTestingRequest(
+    val id: Int,
+    val email: String,
+    val status: String,
+    val createdAt: String,
+    val invitedAt: String?
+)
+
+private const val ANDROID_TESTING_URL = "https://play.google.com/apps/testing/com.wordwaverise.wordwaveriseapp"
+
 private fun checkAdminSecret(secret: String?): Boolean {
     val adminSecret = EnvConfig.adminSecret
     return adminSecret.isNotBlank() && secret == adminSecret
@@ -76,6 +89,7 @@ private fun checkAdminSecret(secret: String?): Boolean {
 
 fun Application.adminRoutes() {
     val userRepository = UserRepository()
+    val emailService = EmailService()
 
     routing {
         route("/api/admin") {
@@ -240,6 +254,54 @@ fun Application.adminRoutes() {
                 userRepository.updateLogin(userId, login)
                 val updated = userRepository.findById(userId) ?: throw NotFoundException("User not found")
                 call.respond(ApiResponse.success(updated.toDTO()))
+            }
+
+            // ── Android testing requests ───────────────────────────────────
+            get("/testing-requests") {
+                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
+                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
+                    return@get
+                }
+
+                val requests = dbQuery {
+                    TestingRequests.selectAll()
+                        .orderBy(TestingRequests.createdAt to SortOrder.DESC)
+                        .map { row ->
+                            AdminTestingRequest(
+                                id = row[TestingRequests.id],
+                                email = row[TestingRequests.email],
+                                status = row[TestingRequests.status],
+                                createdAt = row[TestingRequests.createdAt].toString(),
+                                invitedAt = row[TestingRequests.invitedAt]?.toString()
+                            )
+                        }
+                }
+                call.respond(ApiResponse.success(requests))
+            }
+
+            post("/testing-requests/{id}/invite") {
+                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
+                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
+                    return@post
+                }
+
+                val requestId = call.parameters["id"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid request id")
+
+                val email = dbQuery {
+                    val row = TestingRequests.selectAll()
+                        .where { TestingRequests.id eq requestId }
+                        .singleOrNull() ?: throw NotFoundException("Request not found")
+
+                    TestingRequests.update({ TestingRequests.id eq requestId }) {
+                        it[status] = "invited"
+                        it[invitedAt] = Instant.now()
+                    }
+                    row[TestingRequests.email]
+                }
+
+                emailService.sendTestingInviteEmail(email, ANDROID_TESTING_URL)
+                call.respond(ApiResponse.success("Invite sent"))
             }
         }
     }

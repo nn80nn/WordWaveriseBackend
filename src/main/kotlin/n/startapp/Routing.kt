@@ -21,6 +21,7 @@ import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.savedWordsRoutes
+import n.startapp.routes.testingRoutes
 import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
 import n.startapp.services.SuggestService
@@ -152,6 +153,9 @@ fun Application.configureRouting() {
 
     // AI routes (protected)
     aiRoutes(aiService)
+
+    // Android testing request (public)
+    testingRoutes()
 
     // Admin routes
     adminRoutes()

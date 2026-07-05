@@ -61,6 +61,17 @@ class EmailService {
         send(email, "Код подтверждения WordWaverise", html)
     }
 
+    suspend fun sendTestingInviteEmail(email: String, testingUrl: String) {
+        val html = """
+            <p>Здравствуйте!</p>
+            <p>Вы приглашены на тестирование Android-приложения WordWaverise в Google Play.</p>
+            <p>Перейдите по ссылке ниже с аккаунта Google, который вы указали в заявке ($email), примите приглашение и установите приложение:</p>
+            <p><a href="$testingUrl">$testingUrl</a></p>
+            <p>Спасибо, что помогаете нам сделать WordWaverise лучше!</p>
+        """.trimIndent()
+        send(email, "Вы приглашены на тестирование WordWaverise для Android", html)
+    }
+
     suspend fun sendDeletionScheduledEmail(email: String, scheduledFor: Instant) {
         val formatted = DateTimeFormatter.ofPattern("dd.MM.yyyy")
             .withZone(ZoneId.of("UTC"))

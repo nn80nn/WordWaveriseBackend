@@ -7,6 +7,7 @@ import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
+import n.startapp.database.tables.TestingRequests
 import n.startapp.database.tables.Users
 import n.startapp.utils.EnvConfig
 import org.jetbrains.exposed.sql.Database
@@ -51,7 +52,7 @@ object DatabaseFactory {
             // Create tables if they don't exist
             transaction {
                 println("📋 Creating database tables if they don't exist...")
-                SchemaUtils.createMissingTablesAndColumns(Users, Categories, SavedWords, Flashcards, ScraperCache)
+                SchemaUtils.createMissingTablesAndColumns(Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests)
                 println("✅ Database tables ready")
             }
         } catch (e: Exception) {
