@@ -68,7 +68,7 @@ class WiktionaryApiClient(private val httpClient: HttpClient) : DictionaryApiCli
                     val cleanDef = Jsoup.parse(def.definition).text().trim()
                     if (cleanDef.isBlank()) continue
 
-                    val example = def.parsedExamples.firstOrNull()?.example?.trim()
+                    val example = def.parsedExamples.firstOrNull()?.example?.let { Jsoup.parse(it).text().trim() }
                         ?: def.examples.firstOrNull()?.let { Jsoup.parse(it).text().trim() }
 
                     definitions += SourcedDefinition(
@@ -79,7 +79,7 @@ class WiktionaryApiClient(private val httpClient: HttpClient) : DictionaryApiCli
                     )
 
                     def.parsedExamples.forEach { ex ->
-                        ex.example.trim().takeIf { it.isNotBlank() }?.let { allExamples += it }
+                        Jsoup.parse(ex.example).text().trim().takeIf { it.isNotBlank() }?.let { allExamples += it }
                     }
                 }
                 if (definitions.size >= 10) break
