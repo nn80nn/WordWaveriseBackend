@@ -104,7 +104,25 @@ jobs:
           echo "::warning::DOKPLOY_WEBHOOK_URL secret is not set — skipping deploy trigger"
           exit 0
         fi
-        curl --fail --silent --show-error -X POST "$WEBHOOK_URL" \
+        # Dokploy parses this as a git provider push event: without the
+        # x-github-event header it cannot read the branch and answers
+        # "Branch Not Match" (a 3xx, which curl --fail would not catch),
+        # so check the status code and body explicitly.
+        response=$(curl --silent --show-error --write-out '\n%{http_code}' \
+          -X POST "$WEBHOOK_URL" \
           -H 'Content-Type: application/json' \
-          -d '{"ref":"${{ github.ref }}","sha":"${{ github.sha }}"}'
+          -H 'x-github-event: push' \
+          -H 'x-github-delivery: ${{ github.run_id }}-${{ github.run_attempt }}' \
+          -d '{"ref":"${{ github.ref }}","after":"${{ github.sha }}","repository":{"full_name":"${{ github.repository }}","default_branch":"master"}}')
+        code=$(printf '%s' "$response" | tail -n1)
+        body=$(printf '%s' "$response" | sed '$d')
+        echo "Dokploy responded HTTP $code: $body"
+        if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+          echo "::error::Dokploy rejected the deploy request (HTTP $code)"
+          exit 1
+        fi
+        if printf '%s' "$body" | grep -qi "not match\|error\|unauthor"; then
+          echo "::error::Dokploy did not start a deploy: $body"
+          exit 1
+        fi
         echo "Deploy triggered for ${{ github.sha }}"
