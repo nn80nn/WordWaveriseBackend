@@ -38,12 +38,20 @@
   - Username: `nn80nn`
   - Password: GitHub PAT (classic) со скоупом `read:packages`
 
-### 2. Выключить autodeploy по git в Dokploy
+### 2. Autodeploy оставить включённым, но убрать push-вебхуки из GitHub
 
-Иначе Dokploy стартует деплой сразу по push — раньше, чем Actions успеют
-собрать и запушить новый образ, и в прод уедет предыдущая сборка.
+Тумблер **Autodeploy** в Dokploy гейтит и сам эндпоинт вебхука: при
+выключенном тумблере вызов из Actions получает
+`400 {"message":"Automatic deployments are disabled for this compose"}`.
+Поэтому Autodeploy должен быть **включён**.
 
-Dokploy → приложение → Deployments → **Autodeploy: off**.
+Чтобы при этом деплой не стартовал раньше времени, нужно убрать прямые
+уведомления GitHub → Dokploy: GitHub → Settings → Webhooks → удалить хуки,
+которые бьют в `.../api/deploy/compose/...`. Иначе push дёрнет Dokploy сразу,
+за 2–4 минуты до публикации нового образа, и задеплоится предыдущий.
+
+Итог: Autodeploy on + ноль push-вебхуков в репозитории = единственный, кто
+запускает деплой, это шаг `deploy` в конце workflow.
 
 ### 3. Deploy Webhook
 
@@ -64,13 +72,13 @@ Dokploy → Environment → `IMAGE_TAG=sha-1a2b3c4` → Redeploy.
 
 Вернуться на текущую версию — убрать `IMAGE_TAG` (по умолчанию `latest`).
 
-## Первый переход на новую схему
+## Диагностика шага деплоя
 
-Порядок важен, иначе Dokploy стартует деплой с образом, которого ещё нет в GHCR:
+Шаг `deploy` печатает ответ Dokploy и падает, если тот отказал:
 
-1. **Сначала** выключить autodeploy в Dokploy и настроить доступ к GHCR
-   (шаги 1–3 выше). Пока autodeploy включён, push сразу дёрнет деплой.
-2. Запушить коммит с workflow-файлами → дождаться зелёного CD → убедиться,
-   что образ появился в GitHub → Packages.
-3. Запушить коммит с `docker-compose.yml` (image вместо build).
-4. Dokploy → Redeploy. Проверить `curl https://backend.wordwaverise.com/api/health`.
+| Ответ | Что значит |
+|-------|------------|
+| `200 Compose deployed successfully` | всё хорошо, деплой запущен |
+| `400 Automatic deployments are disabled for this compose` | выключен тумблер Autodeploy — включить (см. шаг 2) |
+| `Branch Not Match` | Dokploy не смог сопоставить ветку из payload с настроенной в приложении |
+| `DOKPLOY_WEBHOOK_URL secret is not set` (warning) | не задан секрет, шаг пропущен |
