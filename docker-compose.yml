@@ -2,12 +2,16 @@ version: '3.8'
 
 services:
   app:
-    # For Dokploy: build from Dockerfile
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # For production with registry: use image instead
-    # image: ghcr.io/${GITHUB_USERNAME}/wordwaverisebackend:latest
+    # Image is built and pushed to GHCR by .github/workflows/cd.yml.
+    # IMAGE_TAG can be set in Dokploy → Environment to pin a specific build
+    # (e.g. sha-1a2b3c4); defaults to the latest master build.
+    image: ghcr.io/nn80nn/wordwaverisebackend:${IMAGE_TAG:-latest}
+    pull_policy: always
+    # To build from source locally instead, comment out the two lines above
+    # and uncomment:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: wordwaverise-backend
     restart: unless-stopped
     environment:
