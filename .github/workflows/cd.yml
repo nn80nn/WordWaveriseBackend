@@ -2,7 +2,7 @@ name: CD
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ master ]
   workflow_dispatch:  # Allows manual trigger
 
 env:
@@ -10,12 +10,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-deploy:
-    name: Build, Test and Deploy
+  test:
+    name: Build and Test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
 
     steps:
     - name: Checkout code
@@ -28,7 +25,7 @@ jobs:
         distribution: 'temurin'
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
@@ -36,11 +33,36 @@ jobs:
     - name: Build with Gradle
       run: ./gradlew build --no-daemon
 
-    - name: Run tests
-      run: ./gradlew test --no-daemon
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: build/test-results/
+        retention-days: 7
 
-    - name: Build Fat JAR
-      run: ./gradlew buildFatJar --no-daemon
+    - name: Upload build reports
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-reports
+        path: build/reports/
+        retention-days: 7
+
+  publish:
+    name: Publish image to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
     - name: Log in to Container Registry
       uses: docker/login-action@v3
@@ -55,58 +77,34 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
-          type=ref,event=branch
-          type=sha,prefix={{branch}}-
           type=raw,value=latest,enable={{is_default_branch}}
+          type=sha,prefix=sha-
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build Docker image using Ktor plugin
-      run: ./gradlew buildImage --no-daemon
-
-    - name: Tag and Push Docker image
-      run: |
-        IMAGE_ID=$(docker images -q n.startapp/wordwaverisebackend:0.0.1 | head -n 1)
-        if [ -z "$IMAGE_ID" ]; then
-          echo "Error: Docker image not found"
-          exit 1
-        fi
-
-        echo "Found image: $IMAGE_ID"
-
-        # Tag with all metadata tags
-        IFS=',' read -ra TAGS <<< "${{ steps.meta.outputs.tags }}"
-        for tag in "${TAGS[@]}"; do
-          echo "Tagging as: $tag"
-          docker tag $IMAGE_ID $tag
-          echo "Pushing: $tag"
-          docker push $tag
-        done
-
-    - name: Upload Fat JAR artifact
-      uses: actions/upload-artifact@v4
+    - name: Build and push image
+      uses: docker/build-push-action@v6
       with:
-        name: wordwaverisebackend-jar
-        path: build/libs/*-all.jar
-        retention-days: 30
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
-  # Uncomment and configure when ready to deploy to a server
-  # deploy:
-  #   name: Deploy to Server
-  #   needs: build-and-deploy
-  #   runs-on: ubuntu-latest
-  #   if: github.ref == 'refs/heads/master'
-  #
-  #   steps:
-  #   - name: Deploy to production server
-  #     uses: appleboy/ssh-action@v1.0.0
-  #     with:
-  #       host: ${{ secrets.DEPLOY_HOST }}
-  #       username: ${{ secrets.DEPLOY_USER }}
-  #       key: ${{ secrets.DEPLOY_KEY }}
-  #       script: |
-  #         cd /path/to/app
-  #         docker-compose pull
-  #         docker-compose up -d
-  #         docker system prune -f
+  deploy:
+    name: Trigger Dokploy deploy
+    needs: publish
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Call Dokploy deploy webhook
+      env:
+        WEBHOOK_URL: ${{ secrets.DOKPLOY_WEBHOOK_URL }}
+      run: |
+        if [ -z "$WEBHOOK_URL" ]; then
+          echo "::warning::DOKPLOY_WEBHOOK_URL secret is not set — skipping deploy trigger"
+          exit 0
+        fi
+        curl --fail --silent --show-error -X POST "$WEBHOOK_URL" \
+          -H 'Content-Type: application/json' \
+          -d '{"ref":"${{ github.ref }}","sha":"${{ github.sha }}"}'
+        echo "Deploy triggered for ${{ github.sha }}"

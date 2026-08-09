@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Pushes to master are covered by the CD workflow, which builds and tests
+  # before publishing the image — no need to run the same build twice.
   push:
-    branches: [ master, main, develop ]
+    branches: [ develop ]
   pull_request:
     branches: [ master, main, develop ]
 
