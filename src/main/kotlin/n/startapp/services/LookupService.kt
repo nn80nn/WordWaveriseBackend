@@ -9,9 +9,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeoutOrNull
 import n.startapp.exceptions.BadRequestException
+import n.startapp.exceptions.NotFoundException
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.lexical.LexicalKind
 import n.startapp.models.lookup.AnnotationStatus
+import n.startapp.models.lookup.LookupNotice
 import n.startapp.models.lookup.LookupResponse
 import n.startapp.models.query.QueryKind
 import n.startapp.models.query.ResolvedQuery
@@ -109,10 +111,12 @@ class LookupService(
 
         val resolution = queryResolver.resolve(query)
         val lemma = resolution.lemma
+        val notice = noticeFor(resolution)
 
         if (lemma.isNullOrBlank()) {
             return LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 annotationStatus = AnnotationStatus.UNAVAILABLE
             )
         }
@@ -122,6 +126,7 @@ class LookupService(
         if (resolution.language == "ru" || resolution.kind == QueryKind.SENTENCE) {
             return LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 annotationStatus = AnnotationStatus.UNAVAILABLE
             )
         }
@@ -137,6 +142,7 @@ class LookupService(
         hot.getIfPresent(cacheKey)?.let { cached ->
             return LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 entry = cached,
                 annotationStatus = AnnotationStatus.READY
             )
@@ -146,6 +152,7 @@ class LookupService(
             hot.put(cacheKey, stored.entry)
             return LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 entry = stored.entry,
                 annotationStatus = AnnotationStatus.READY,
                 raw = stored.raw
@@ -154,15 +161,21 @@ class LookupService(
 
         // Cold path. Fetch fast (API sources only) so the user has something to look at even if
         // annotation overruns the grace period.
-        val aggregate = aggregationService.aggregateDetailed(
-            word = lemma,
-            skipScrapers = true,
-            isPhrase = resolution.kind == QueryKind.PHRASE
-        )
+        val isPhrase = resolution.kind == QueryKind.PHRASE
+        val aggregate = try {
+            aggregationService.aggregateDetailed(lemma, skipScrapers = true, isPhrase = isPhrase)
+        } catch (e: NotFoundException) {
+            // Idioms and newer slang are routinely missing from every source. A written-from-
+            // scratch article, clearly labelled as such, beats "not found" for a phrase the user
+            // demonstrably encountered somewhere.
+            if (!isPhrase) throw e
+            return ungroundedLookup(resolution, notice, lemma, cacheKey)
+        }
 
         degraded.getIfPresent(cacheKey)?.let { failed ->
             return LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 entry = failed.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = failed.reason,
@@ -211,12 +224,14 @@ class LookupService(
         return when {
             outcome == null -> LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 annotationStatus = AnnotationStatus.PENDING,
                 retryAfterMs = RETRY_AFTER_MS,
                 raw = aggregate.response
             )
             outcome.entry.degraded -> LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 entry = outcome.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = outcome.reason,
@@ -224,6 +239,7 @@ class LookupService(
             )
             else -> LookupResponse(
                 resolution = resolution,
+                notice = notice,
                 entry = outcome.entry,
                 annotationStatus = AnnotationStatus.READY,
                 raw = aggregate.response
@@ -256,9 +272,78 @@ class LookupService(
         )
     }
 
+    /** Phrase path when the dictionary sources have nothing: write the article, label it. */
+    private suspend fun ungroundedLookup(
+        resolution: ResolvedQuery,
+        notice: LookupNotice?,
+        lemma: String,
+        cacheKey: String
+    ): LookupResponse {
+        val result = withTimeoutOrNull(ANNOTATION_DEADLINE_MS) {
+            annotationService.annotateUngrounded(lemma, resolution.surface, LexicalKind.IDIOM)
+        }
+
+        if (result == null || result.entry.degraded || result.entry.posGroups.isEmpty()) {
+            // The model declined or failed. Better to say nothing than to invent an idiom.
+            return LookupResponse(
+                resolution = resolution,
+                notice = notice,
+                annotationStatus = AnnotationStatus.UNAVAILABLE,
+                annotationNote = result?.reason
+            )
+        }
+
+        repository.save(
+            cacheKey = cacheKey,
+            entry = result.entry,
+            raw = n.startapp.models.dictionary.WordDetailResponse(word = lemma, definitions = emptyList()),
+            sourceFingerprint = LexicalEntryRepository.fingerprint(emptyList())
+        )
+        hot.put(cacheKey, result.entry)
+
+        return LookupResponse(
+            resolution = resolution,
+            notice = notice,
+            entry = result.entry,
+            annotationStatus = AnnotationStatus.READY
+        )
+    }
+
     private fun kindFor(resolution: ResolvedQuery): LexicalKind = when (resolution.kind) {
         QueryKind.PHRASE -> LexicalKind.PHRASE
         else -> LexicalKind.WORD
+    }
+
+    /**
+     * Explains a silent substitution to the user.
+     *
+     * A typo used to produce an error screen; it now produces the corrected article plus a line
+     * saying what happened, so the correction is visible and reversible rather than a surprise.
+     */
+    private fun noticeFor(resolution: ResolvedQuery): LookupNotice? {
+        val lemma = resolution.lemma ?: return null
+        return when {
+            resolution.correctionApplied && resolution.resolvedBy == "layout" -> LookupNotice(
+                type = "layout_corrected",
+                textRu = "Похоже, была не та раскладка. Показано для «$lemma».",
+                originalQuery = resolution.correctedFrom ?: resolution.normalized
+            )
+
+            resolution.kind == QueryKind.MISSPELLING -> LookupNotice(
+                type = "spelling_corrected",
+                textRu = "Показано для «$lemma». Вы искали «${resolution.correctedFrom ?: resolution.normalized}»?",
+                originalQuery = resolution.correctedFrom ?: resolution.normalized
+            )
+
+            resolution.kind == QueryKind.INFLECTION && !lemma.equals(resolution.normalized, true) ->
+                LookupNotice(
+                    type = "lemma_resolved",
+                    textRu = "«${resolution.normalized}» — форма слова «$lemma».",
+                    originalQuery = resolution.normalized
+                )
+
+            else -> null
+        }
     }
 
     /** Drops every cached article for a lemma so the next lookup regenerates it. */

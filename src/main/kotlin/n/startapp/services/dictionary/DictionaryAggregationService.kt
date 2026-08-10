@@ -69,6 +69,9 @@ class DictionaryAggregationService {
 
     private val scraperService = ScraperService(ScraperCacheRepository())
 
+    /** Beyond this the query is prose, and no dictionary site has a page for it. */
+    private val MAX_SCRAPER_TOKENS = 5
+
     /**
      * Fetch word data from all API sources + scrapers in parallel and merge results.
      * @param skipScrapers if true, skip web scrapers for faster response (API data only)
@@ -85,7 +88,12 @@ class DictionaryAggregationService {
      */
     suspend fun aggregateDetailed(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): AggregatedWord {
         val activeClients = if (isPhrase) phraseApiClients else allApiClients
-        val actuallySkipScrapers = skipScrapers || isPhrase
+
+        // Cambridge and Oxford slugify spaces to '-' and do carry idiom entries, so phrases were
+        // never the reason to skip them — a blanket skip is why anything longer than one word
+        // only ever came back from Wiktionary. Skip only what is too long to be a headword.
+        val tokenCount = word.trim().split(Regex("\\s+")).size
+        val actuallySkipScrapers = skipScrapers || tokenCount > MAX_SCRAPER_TOKENS
         if (actuallySkipScrapers) {
             logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from ${activeClients.size} API sources only")
         } else {

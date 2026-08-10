@@ -8,7 +8,9 @@ import n.startapp.models.dictionary.WordDetailResponse
 import n.startapp.models.lexical.LEXICAL_SCHEMA_VERSION
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.services.ai.LlmUsage
+import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
@@ -108,6 +110,48 @@ class LexicalEntryRepository {
                 }
             }
         }.onFailure { logger.warn("Failed to persist lexical entry '$cacheKey': ${it.message}") }
+    }
+
+    /**
+     * Finds the lemma an already-annotated entry files this surface form under.
+     *
+     * Matches the headword first, then the recorded inflected forms, which is what lets
+     * "running" resolve to "run" without a spelling oracle or a model call once "run" is known.
+     */
+    suspend fun findLemmaByForm(form: String): String? = dbQuery {
+        val needle = form.trim().lowercase()
+        if (needle.isBlank()) return@dbQuery null
+
+        LexicalEntries.selectAll().where { LexicalEntries.lemma eq needle }
+            .firstOrNull()?.let { return@dbQuery it[LexicalEntries.lemma] }
+
+        LexicalEntries
+            .selectAll()
+            .where { LexicalEntries.formsIndex like "%$needle%" }
+            .limit(20)
+            .firstOrNull { row ->
+                // `like` is a coarse prefilter; confirm on a whole-token match.
+                row[LexicalEntries.formsIndex].split(' ').any { it == needle }
+            }
+            ?.get(LexicalEntries.lemma)
+    }
+
+    /**
+     * Most recently written article for a lemma, whatever schema or prompt version produced it.
+     *
+     * Used to enrich the legacy endpoints, where any annotated Russian beats the context-free
+     * word-level translation they would otherwise generate — so being strict about versions
+     * would only mean falling back to the worse answer.
+     */
+    suspend fun findLatestByLemma(lemma: String): LexicalEntry? = dbQuery {
+        LexicalEntries.selectAll()
+            .where { LexicalEntries.lemma eq lemma.trim().lowercase() }
+            .orderBy(LexicalEntries.updatedAt to SortOrder.DESC)
+            .limit(1)
+            .firstOrNull()
+            ?.let { row ->
+                runCatching { json.decodeFromString<LexicalEntry>(row[LexicalEntries.entryJson]) }.getOrNull()
+            }
     }
 
     suspend fun deleteByLemma(lemma: String): Int = dbQuery {

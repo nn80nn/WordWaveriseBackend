@@ -10,6 +10,7 @@ import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.OpenAiCompatibleLlmClient
 import n.startapp.services.dictionary.DictionaryAggregationService
 import n.startapp.services.lexical.LexicalAnnotationService
+import n.startapp.services.query.DataMuseWordOracle
 import n.startapp.services.query.QueryResolver
 import org.slf4j.LoggerFactory
 
@@ -27,14 +28,23 @@ class ServiceRegistry {
     val llmClient: LlmClient = OpenAiCompatibleLlmClient()
     val llmCacheRepository = LlmCacheRepository()
 
+    val lexicalEntryRepository = LexicalEntryRepository()
+
     val aiService = AiService(llmClient)
-    val dictionaryService = DictionaryService(aiService)
+    val dictionaryService = DictionaryService(aiService, lexicalEntryRepository)
     val suggestService = SuggestService()
 
     private val aggregationService = DictionaryAggregationService()
     private val annotationService = LexicalAnnotationService(llmClient)
-    val lexicalEntryRepository = LexicalEntryRepository()
-    val queryResolver = QueryResolver()
+
+    private val oracleHttpClient = DataMuseWordOracle.defaultClient()
+    val queryResolver = QueryResolver(
+        oracle = DataMuseWordOracle(oracleHttpClient),
+        // A form already present in the annotated corpus needs no oracle and no model call.
+        knownForm = { form -> lexicalEntryRepository.findLemmaByForm(form) },
+        llm = llmClient,
+        llmCache = llmCacheRepository
+    )
 
     val lookupService = LookupService(
         aggregationService = aggregationService,
@@ -49,6 +59,7 @@ class ServiceRegistry {
         runCatching { aggregationService.close() }.onFailure { logger.warn("aggregationService.close(): ${it.message}") }
         runCatching { dictionaryService.close() }.onFailure { logger.warn("dictionaryService.close(): ${it.message}") }
         runCatching { suggestService.close() }.onFailure { logger.warn("suggestService.close(): ${it.message}") }
+        runCatching { oracleHttpClient.close() }.onFailure { logger.warn("oracleHttpClient.close(): ${it.message}") }
         runCatching { llmClient.close() }.onFailure { logger.warn("llmClient.close(): ${it.message}") }
     }
 }

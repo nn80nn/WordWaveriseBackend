@@ -2,6 +2,7 @@ package n.startapp.services.lexical
 
 import kotlinx.serialization.json.Json
 import n.startapp.models.dictionary.DetailedDefinition
+import n.startapp.models.dictionary.WordDetailResponse
 import n.startapp.models.lexical.DraftEntry
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.lexical.LexicalKind
@@ -115,6 +116,22 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             reason = lastCode,
             detail = lastIssues.joinToString("; ").take(600)
         )
+    }
+
+    /**
+     * Writes an article for a headword no source carries — mostly newer idioms and slang, which
+     * scrapers reliably miss. Marked `aiGenerated` so both clients can say so plainly; an
+     * unlabelled invented entry in a dictionary is worse than no entry.
+     */
+    suspend fun annotateUngrounded(
+        lemma: String,
+        queryForm: String,
+        kind: LexicalKind
+    ): AnnotationResult {
+        val empty = WordDetailResponse(word = lemma, definitions = emptyList())
+        val aggregate = AggregatedWord(empty, emptyList(), emptyMap())
+        val result = annotate(lemma, queryForm, kind, aggregate)
+        return result.copy(entry = result.entry.copy(aiGenerated = true))
     }
 
     private sealed interface AttemptResult {

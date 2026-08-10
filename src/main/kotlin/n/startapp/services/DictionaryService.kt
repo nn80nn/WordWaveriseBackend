@@ -22,7 +22,11 @@ import org.slf4j.LoggerFactory
 /**
  * Enhanced service for dictionary lookups with multi-source aggregation and caching
  */
-class DictionaryService(private val aiService: AiService) {
+class DictionaryService(
+    private val aiService: AiService,
+    /** Optional: when present, annotated Russian is preferred over the context-free AI call. */
+    private val lexicalRepository: n.startapp.repositories.LexicalEntryRepository? = null
+) {
     private val logger = LoggerFactory.getLogger(DictionaryService::class.java)
     private val translationApiUrl = "https://api.mymemory.translated.net/get"
 
@@ -149,13 +153,28 @@ class DictionaryService(private val aiService: AiService) {
 
     /**
      * Add Russian translations to each WordEntry using its part-of-speech as context.
-     * Calls are made in parallel so latency ≈ one AI call regardless of entry count.
-     * Example: "lead (noun)" → "свинец", "lead (verb)" → "вести"
+     *
+     * Prefers the annotated article when one exists: its per-sense Russian was written with the
+     * definition in view, whereas the AI fallback only ever sees "lead (noun)". This is what
+     * upgrades the legacy endpoints — and therefore app builds already in the wild — for free.
+     * Fallback calls are made in parallel so latency ≈ one AI call regardless of entry count.
      */
     private suspend fun addEntryTranslations(word: String, entries: List<WordEntry>): List<WordEntry> = coroutineScope {
+        val annotated = lexicalRepository?.let { repo ->
+            runCatching { repo.findLatestByLemma(word) }.getOrNull()
+        }
+
         entries.map { entry ->
             async {
                 val pos = entry.partOfSpeech ?: return@async entry
+
+                annotated?.posGroups
+                    ?.firstOrNull { it.pos.equals(pos, ignoreCase = true) }
+                    ?.senses?.firstOrNull()
+                    ?.translationsRu?.firstOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { return@async entry.copy(translation = it) }
+
                 val raw = translateWord(word, pos) ?: return@async entry
                 val translation = raw.substringBefore("(").trim()
                     .split(" ").take(3).joinToString(" ")
