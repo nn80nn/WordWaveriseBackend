@@ -200,12 +200,26 @@ class LookupService(
         val job = inFlight.computeIfAbsent(cacheKey) {
             scope.async {
                 try {
+                    // Annotate from the FULL aggregate, not the quick one the response was built
+                    // from. The quick path skips the scrapers, and they are the only source of
+                    // IPA and of the per-part-of-speech pronunciation split that distinguishes
+                    // lead /liːd/ from lead /lɛd/. Since this entry is then stored without a TTL,
+                    // annotating the quick aggregate would bake a pronunciation-less article in
+                    // permanently. The user is not waiting on this — they already have the raw
+                    // response — so the extra seconds cost nothing.
+                    val full = runCatching {
+                        aggregationService.aggregateDetailed(lemma, skipScrapers = false, isPhrase = isPhrase)
+                    }.getOrElse {
+                        logger.warn("Full aggregate failed for '{}', annotating quick data: {}", lemma, it.message)
+                        aggregate
+                    }
+
                     val result = withTimeoutOrNull(ANNOTATION_DEADLINE_MS) {
-                        annotationService.annotate(lemma, resolution.surface, kind, aggregate)
+                        annotationService.annotate(lemma, resolution.surface, kind, full)
                     } ?: LexicalAnnotationService.AnnotationResult(
                         entry = LexicalEntryFallback.fromRaw(
-                            aggregate.response, lemma, resolution.surface, kind,
-                            annotationService.buildSources(aggregate.sourceDefinitions)
+                            full.response, lemma, resolution.surface, kind,
+                            annotationService.buildSources(full.sourceDefinitions)
                         ),
                         reason = "llm_timeout",
                         detail = "annotation exceeded ${ANNOTATION_DEADLINE_MS}ms"
@@ -216,12 +230,14 @@ class LookupService(
                         logger.warn("Annotation degraded for '{}': {} — {}", lemma, result.reason, result.detail)
                         degraded.put(cacheKey, outcome)
                     } else {
+                        // Store the full aggregate too: it is what the sources view renders on a
+                        // warm hit, and it is richer than the quick one the response carried.
                         repository.save(
                             cacheKey = cacheKey,
                             entry = result.entry,
-                            raw = aggregate.response,
+                            raw = full.response,
                             sourceFingerprint = LexicalEntryRepository.fingerprint(
-                                aggregate.sourceDefinitions.map { it.definition }
+                                full.sourceDefinitions.map { it.definition }
                             )
                         )
                         hot.put(cacheKey, result.entry)
