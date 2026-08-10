@@ -26,9 +26,10 @@ import kotlin.random.Random
 /**
  * The single LLM entry point for the whole application.
  *
- * Everything that used to be scattered across AiService lives here: provider dialect handling,
- * structured output, retries, and token accounting. One [HttpClient] is shared by every caller —
- * previously each service constructed its own engine and never closed it.
+ * Owns provider dialect handling, structured output, retries, token accounting — and the choice
+ * of which provider to send a request to. User-facing work goes to the primary and spills over
+ * to the reserve pool when the primary runs out of quota; bulk work goes to the pool only, so a
+ * background job can never spend the budget someone waiting on a screen depends on.
  */
 class OpenAiCompatibleLlmClient : LlmClient {
     private val logger = LoggerFactory.getLogger(OpenAiCompatibleLlmClient::class.java)
@@ -49,48 +50,65 @@ class OpenAiCompatibleLlmClient : LlmClient {
     /** Optional fields that can be dropped when a gateway hides the real rejection. */
     private val MAX_RELAXATIONS = 2
 
-    /**
-     * The chat-completions URL.
-     *
-     * AI_DOMEN is written either as a bare host or with the API prefix already on it, and both
-     * are natural things to paste from a provider's docs. Appending unconditionally produced
-     * `/v1/v1/chat/completions`, which gateways answer with a bare 502 or 404 and no explanation,
-     * so a trailing `/v1` is stripped before the path is added.
-     */
-    val endpoint: String
-        get() {
-            var raw = EnvConfig.aiDomen.trim().trimEnd('/')
-            if (!raw.startsWith("http://") && !raw.startsWith("https://")) raw = "https://$raw"
-            if (raw.endsWith("/v1")) raw = raw.removeSuffix("/v1")
-            if (raw.endsWith("/chat/completions")) raw = raw.removeSuffix("/chat/completions").trimEnd('/')
-            if (raw.endsWith("/v1")) raw = raw.removeSuffix("/v1")
-            return "$raw/v1/chat/completions"
-        }
+    val primary: LlmProvider get() = LlmProvider.primary()
+    val pool: LlmProvider get() = LlmProvider.pool()
 
-    private fun modelFor(tier: LlmModelTier) =
-        if (tier == LlmModelTier.FAST) EnvConfig.aiModelFast else EnvConfig.aiModel
+    /** Where the request goes first, and where it may spill over to. */
+    private fun providersFor(route: LlmRoute): List<LlmProvider> = when (route) {
+        LlmRoute.BULK -> listOf(pool).filter { it.isConfigured }
+        LlmRoute.LIVE -> listOfNotNull(
+            primary.takeIf { it.isConfigured },
+            pool.takeIf { it.isConfigured }
+        )
+    }
 
     override suspend fun complete(request: LlmRequest): LlmResult {
-        if (EnvConfig.aiDomen.isBlank() || EnvConfig.aiApiKey.isBlank()) {
-            throw IllegalStateException("AI service not configured: AI_DOMEN or AI_API missing")
+        val providers = providersFor(request.route)
+        if (providers.isEmpty()) {
+            throw IllegalStateException(
+                if (request.route == LlmRoute.BULK) "Reserve pool not configured: AI_DOMEN_POOL or AI_API_POOL missing"
+                else "AI service not configured: AI_DOMEN or AI_API missing"
+            )
         }
 
-        val model = modelFor(request.tier)
+        var lastFailure: Exception? = null
+        for ((index, provider) in providers.withIndex()) {
+            try {
+                return attempt(provider, request)
+            } catch (e: LlmException) {
+                lastFailure = e
+                val hasSpare = index < providers.lastIndex
+                if (!hasSpare) throw e
+                // Exhausted quota or an unreachable endpoint is exactly what the reserve is for;
+                // a rejected request body would fail the same way on the next provider, so only
+                // capacity failures are worth spilling over.
+                if (!e.worthSpillingOver) throw e
+                logger.warn(
+                    "llm task={} exhausted on {}, falling over to {}: {}",
+                    request.task, provider.name, providers[index + 1].name, e.message
+                )
+            }
+        }
+        throw lastFailure ?: LlmException("AI request '${request.task}' had nowhere to go")
+    }
+
+    private suspend fun attempt(provider: LlmProvider, request: LlmRequest): LlmResult {
+        val model = provider.modelFor(request.tier)
         var attempt = 0
         var lastError: Exception? = null
         var relaxations = 0
         var budgetRaised = false
 
         // maxRetries counts retries, so the loop body runs maxRetries + 1 times. Dialect
-        // adaptations (400s that tell us how to fix the body) do not consume an attempt.
+        // adaptations (rejections that tell us how to fix the body) do not consume an attempt.
         while (attempt <= request.maxRetries) {
             attempt++
             val started = System.currentTimeMillis()
             try {
-                val response = httpClient.post(endpoint) {
+                val response = httpClient.post(provider.endpoint) {
                     contentType(ContentType.Application.Json)
-                    header("Authorization", "Bearer ${EnvConfig.aiApiKey}")
-                    setBody(buildBody(request, model, budgetRaised))
+                    header("Authorization", "Bearer ${provider.apiKey}")
+                    setBody(buildBody(provider, request, model, budgetRaised))
                 }
                 val elapsed = System.currentTimeMillis() - started
 
@@ -105,26 +123,25 @@ class OpenAiCompatibleLlmClient : LlmClient {
                             latencyMs = elapsed
                         )
                         logger.info(
-                            "llm task={} model={} in={} out={} ms={} attempts={} finish={}",
-                            request.task, model, usage.promptTokens, usage.completionTokens,
-                            elapsed, attempt, choice?.finishReason
+                            "llm task={} provider={} model={} in={} out={} ms={} attempts={} finish={}",
+                            request.task, provider.name, model, usage.promptTokens,
+                            usage.completionTokens, elapsed, attempt, choice?.finishReason
                         )
-                        // A reply cut off at the token ceiling is not a model failure and not
-                        // retryable as-is: the JSON is truncated mid-string and will never parse.
-                        // Only a bigger budget helps, so grant one once.
+
+                        // A reply cut off at the token ceiling is not retryable as-is: the JSON
+                        // is truncated mid-string and will never parse. Only a bigger budget
+                        // helps, so grant one once.
                         if (choice?.finishReason == "length" && !budgetRaised) {
                             budgetRaised = true
                             logger.warn(
-                                "llm task={} hit the token ceiling ({}); retrying with a larger budget",
-                                request.task, AiCompat.effectiveMaxTokens(request.maxTokens)
+                                "llm task={} hit the token ceiling; retrying with a larger budget",
+                                request.task
                             )
                             attempt--
                             continue
                         }
 
                         if (content.isEmpty()) {
-                            // Reasoning models spend the completion budget on hidden reasoning
-                            // tokens, so too small a cap yields an empty message rather than an error.
                             lastError = LlmException(
                                 "Empty AI response (finish_reason=${choice?.finishReason}, " +
                                     "completion_tokens=${usage.completionTokens})"
@@ -137,24 +154,30 @@ class OpenAiCompatibleLlmClient : LlmClient {
 
                     response.status.value == 400 -> {
                         val body = runCatching { response.bodyAsText() }.getOrDefault("")
-                        if (adaptDialect(body, request)) {
+                        if (adaptDialect(provider, body, request)) {
                             attempt--          // a config fix is not a failed attempt
                             continue
                         }
-                        throw LlmException("AI provider rejected the request: ${body.take(500)}")
+                        // A malformed request fails identically everywhere — do not spill over.
+                        throw LlmException("[${provider.name}] rejected the request: ${body.take(500)}")
                     }
 
                     response.status.value == 401 || response.status.value == 403 ->
-                        throw LlmException("AI provider rejected the credentials (${response.status.value})")
+                        throw LlmException(
+                            "[${provider.name}] rejected the credentials (${response.status.value})",
+                            worthSpillingOver = true
+                        )
 
                     response.status.value == 429 -> {
                         // Rate limits are per minute, so exponential backoff from 500ms just
                         // burns the remaining attempts. Providers say how long to wait — use it.
                         val waitMs = retryAfterMs(response)
-                        lastError = LlmException("AI provider returned 429 (rate limited)")
+                        lastError = LlmException(
+                            "[${provider.name}] rate limited (429)", worthSpillingOver = true
+                        )
                         logger.warn(
-                            "llm task={} model={} rate limited, waiting {}ms, attempt={}/{}",
-                            request.task, model, waitMs, attempt, request.maxRetries + 1
+                            "llm task={} provider={} rate limited, waiting {}ms, attempt={}/{}",
+                            request.task, provider.name, waitMs, attempt, request.maxRetries + 1
                         )
                         if (attempt <= request.maxRetries) delay(waitMs)
                     }
@@ -165,23 +188,25 @@ class OpenAiCompatibleLlmClient : LlmClient {
                         // signal is a bare status code that fits a dozen different causes.
                         val body = runCatching { response.bodyAsText() }.getOrDefault("").take(300)
                         lastError = LlmException(
-                            "AI provider returned ${response.status.value}" +
-                                if (body.isNotBlank()) ": $body" else ""
+                            "[${provider.name}] returned ${response.status.value}" +
+                                if (body.isNotBlank()) ": $body" else "",
+                            worthSpillingOver = true
                         )
                         logger.warn(
-                            "llm task={} model={} status={} attempt={}/{} body={}",
-                            request.task, model, response.status.value, attempt, request.maxRetries + 1, body
+                            "llm task={} provider={} status={} attempt={}/{} body={}",
+                            request.task, provider.name, response.status.value,
+                            attempt, request.maxRetries + 1, body
                         )
 
                         // A gateway in front of the model often reports a rejected request body
                         // as 5xx rather than passing the 400 through, so an unsupported field
                         // looks like a transient outage and retrying the same body can never
-                        // succeed. Drop one optional field per failure and retry immediately;
-                        // each relaxation is process-wide, so the cost is paid once per deploy.
+                        // succeed. Only relax when the body reads like a structured rejection;
+                        // a plain error page means the upstream is down, not that we asked wrong.
                         if (response.status.value >= 500 &&
                             looksLikeRequestRejection(body) &&
                             relaxations < MAX_RELAXATIONS &&
-                            relax(request)
+                            relax(provider, request)
                         ) {
                             relaxations++
                             attempt--
@@ -195,50 +220,44 @@ class OpenAiCompatibleLlmClient : LlmClient {
                 throw e
             } catch (e: IOException) {
                 lastError = e
-                logger.warn("llm task={} transport failure attempt={}: {}", request.task, attempt, e.message)
+                logger.warn("llm task={} provider={} transport failure attempt={}: {}",
+                    request.task, provider.name, attempt, e.message)
                 backoff(attempt)
             } catch (e: HttpRequestTimeoutException) {
                 lastError = e
-                logger.warn("llm task={} timed out attempt={}", request.task, attempt)
+                logger.warn("llm task={} provider={} timed out attempt={}", request.task, provider.name, attempt)
                 backoff(attempt)
             }
         }
 
         throw LlmException(
-            "AI request '${request.task}' failed after $attempt attempt(s): ${lastError?.message}",
-            lastError
+            "[${provider.name}] '${request.task}' failed after $attempt attempt(s): ${lastError?.message}",
+            lastError,
+            worthSpillingOver = true
         )
     }
 
     /**
-     * Drops the next optional request field, most specialised first.
-     *
-     * Ordered by how likely the field is to be the culprit and how little is lost by dropping it:
-     * a schema constraint is replaced by plain JSON (the validator still checks the result), and
-     * only then is temperature given up, which merely makes replies less deterministic.
-     *
-     * @return true when something changed and the request is worth re-sending.
-     */
-    /**
      * A gateway that rejected our body says so in a structured error; one whose upstream is
      * simply down serves a plain error page ("Bad Gateway").
-     *
-     * Without this distinction an outage looks exactly like a rejected field, and the ladder
-     * strips the schema and the temperature on the way down — permanently, for the whole
-     * process — for a failure that had nothing to do with the request.
      */
     private fun looksLikeRequestRejection(body: String): Boolean {
         val trimmed = body.trim()
         return trimmed.startsWith("{") && trimmed.contains("\"error\"", ignoreCase = true)
     }
 
-    private fun relax(request: LlmRequest): Boolean {
+    /**
+     * Drops the next optional request field, most specialised first: a schema constraint is
+     * replaced by plain JSON (the validator still checks the result), and only then is
+     * temperature given up, which merely makes replies less deterministic.
+     */
+    private fun relax(provider: LlmProvider, request: LlmRequest): Boolean {
         if (request.responseFormat !is ResponseFormat.Text &&
-            AiCompat.structuredMode != AiCompat.StructuredMode.NONE &&
-            AiCompat.downgradeStructuredMode(logger)
+            AiCompat.structuredMode(provider.name) != AiCompat.StructuredMode.NONE &&
+            AiCompat.downgradeStructuredMode(provider.name, logger)
         ) return true
 
-        if (request.temperature != null && AiCompat.disableTemperature(logger)) return true
+        if (request.temperature != null && AiCompat.disableTemperature(provider.name, logger)) return true
 
         return false
     }
@@ -251,10 +270,9 @@ class OpenAiCompatibleLlmClient : LlmClient {
 
     /**
      * How long the provider wants us to wait, from `Retry-After` (seconds) or the
-     * `x-ratelimit-reset-*` headers OpenAI-compatible providers send with durations like
-     * "7.66s" or "2m59s". Capped so one throttled call cannot monopolise an annotation slot.
+     * `x-ratelimit-reset-*` headers, which carry durations like "7.66s" or "2m59s".
      */
-    private fun retryAfterMs(response: io.ktor.client.statement.HttpResponse): Long {
+    private fun retryAfterMs(response: HttpResponse): Long {
         val cap = 30_000L
         val header = response.headers["Retry-After"]
             ?: response.headers["retry-after"]
@@ -273,20 +291,21 @@ class OpenAiCompatibleLlmClient : LlmClient {
         return 5_000L
     }
 
-    /**
-     * Interprets a provider 400 and mutates the process-wide dialect flags.
-     * @return true when something changed and the request is worth re-sending.
-     */
-    private fun adaptDialect(errorBody: String, request: LlmRequest): Boolean {
-        val mentionsResponseFormat = "response_format" in errorBody.lowercase() ||
-            "json_schema" in errorBody.lowercase()
+    private fun adaptDialect(provider: LlmProvider, errorBody: String, request: LlmRequest): Boolean {
+        val lower = errorBody.lowercase()
+        val mentionsResponseFormat = "response_format" in lower || "json_schema" in lower
         if (mentionsResponseFormat && request.responseFormat != ResponseFormat.Text) {
-            return AiCompat.downgradeStructuredMode(logger)
+            return AiCompat.downgradeStructuredMode(provider.name, logger)
         }
-        return AiCompat.adaptTo(errorBody, logger)
+        return AiCompat.adaptTo(provider.name, errorBody, logger)
     }
 
-    private fun buildBody(request: LlmRequest, model: String, doubleBudget: Boolean = false): JsonObject = buildJsonObject {
+    private fun buildBody(
+        provider: LlmProvider,
+        request: LlmRequest,
+        model: String,
+        doubleBudget: Boolean
+    ): JsonObject = buildJsonObject {
         put("model", model)
         putJsonArray("messages") {
             request.system?.let { system ->
@@ -301,13 +320,16 @@ class OpenAiCompatibleLlmClient : LlmClient {
             }
         }
         val budget = if (doubleBudget) request.maxTokens * 2 else request.maxTokens
-        put(AiCompat.tokenParam, AiCompat.effectiveMaxTokens(budget))
-        if (AiCompat.supportsTemperature) request.temperature?.let { put("temperature", it) }
-        putResponseFormat(request.responseFormat)
+        put(AiCompat.tokenParam(provider.name), AiCompat.effectiveMaxTokens(provider.name, budget))
+        if (AiCompat.supportsTemperature(provider.name)) request.temperature?.let { put("temperature", it) }
+        putResponseFormat(provider, request.responseFormat)
     }
 
-    private fun kotlinx.serialization.json.JsonObjectBuilder.putResponseFormat(format: ResponseFormat) {
-        val mode = AiCompat.structuredMode
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putResponseFormat(
+        provider: LlmProvider,
+        format: ResponseFormat
+    ) {
+        val mode = AiCompat.structuredMode(provider.name)
         if (mode == AiCompat.StructuredMode.NONE) return
 
         when (format) {

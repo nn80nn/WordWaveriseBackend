@@ -14,6 +14,8 @@ import n.startapp.services.lexical.LexicalAnnotationService
 import n.startapp.services.query.DataMuseWordOracle
 import n.startapp.services.query.QueryResolver
 import n.startapp.services.query.RuEnTranslationService
+import n.startapp.services.warmup.WarmupService
+import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
 
 /**
@@ -58,11 +60,23 @@ class ServiceRegistry {
         repository = lexicalEntryRepository,
         queryResolver = queryResolver,
         ruEnTranslationService = ruEnTranslationService,
-        llmEndpoint = (llmClient as? OpenAiCompatibleLlmClient)?.endpoint ?: "?"
+        llmEndpoint = (llmClient as? OpenAiCompatibleLlmClient)?.primary?.endpoint ?: "?"
     )
+
+    private val warmupOracle = DataMuseWordOracle(oracleHttpClient)
+    val warmupService = WarmupService(lookupService, warmupOracle)
+
+    init {
+        if (EnvConfig.warmupEnabled) {
+            // Resumes on its own after a restart: anything already annotated is skipped.
+            val started = warmupService.start(EnvConfig.warmupLimit)
+            logger.info("Warm-up enabled by configuration, started={}", started)
+        }
+    }
 
     fun close() {
         logger.info("Shutting down services")
+        runCatching { warmupService.close() }.onFailure { logger.warn("warmupService.close(): ${it.message}") }
         runCatching { lookupService.close() }.onFailure { logger.warn("lookupService.close(): ${it.message}") }
         runCatching { aggregationService.close() }.onFailure { logger.warn("aggregationService.close(): ${it.message}") }
         runCatching { dictionaryService.close() }.onFailure { logger.warn("dictionaryService.close(): ${it.message}") }

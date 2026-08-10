@@ -1,0 +1,186 @@
+package n.startapp.services.warmup
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import n.startapp.services.LookupService
+import n.startapp.services.query.WordOracle
+import n.startapp.utils.EnvConfig
+import org.slf4j.LoggerFactory
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.random.Random
+
+@Serializable
+data class WarmupStatus(
+    val running: Boolean,
+    val total: Int,
+    val processed: Int,
+    val written: Int,
+    val alreadyPresent: Int,
+    val skipped: Int,
+    val notFound: Int,
+    val failed: Int,
+    val currentWord: String? = null,
+    val wordsPerHour: Int,
+    val startedAt: Long? = null,
+    val lastError: String? = null,
+    val poolConfigured: Boolean
+)
+
+/**
+ * Builds the corpus ahead of demand, one word at a time.
+ *
+ * Two constraints shape this, and both point the same way — go slowly:
+ *
+ *  - the scrapers share one global rate-limited queue with live lookups, so a fast bulk run
+ *    would put every real search behind it;
+ *  - warming means N requests each to Cambridge, Oxford and OED from a single IP, and LDOCE
+ *    has already blocked this server. Losing the others would cost the grounding the whole
+ *    annotation layer depends on.
+ *
+ * At the default 30 words/hour the job uses under 2% of the scraper budget and looks like a
+ * trickle rather than a crawl. The corpus itself is the progress record: anything already
+ * annotated is skipped, so a restart resumes without bookkeeping.
+ */
+class WarmupService(
+    private val lookupService: LookupService,
+    private val oracle: WordOracle? = null
+) {
+    private val logger = LoggerFactory.getLogger(WarmupService::class.java)
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var job: Job? = null
+
+    private val processed = AtomicInteger()
+    private val written = AtomicInteger()
+    private val alreadyPresent = AtomicInteger()
+    private val skipped = AtomicInteger()
+    private val notFound = AtomicInteger()
+    private val failed = AtomicInteger()
+    private val current = AtomicReference<String?>(null)
+    private val lastError = AtomicReference<String?>(null)
+    private val startedAt = AtomicReference<Long?>(null)
+    private val total = AtomicInteger()
+
+    companion object {
+        private val WORD_LIST_RESOURCES = listOf(
+            "/wordlists/b2c1.txt",
+            "/wordlists/b2c1_nouns.txt"
+        )
+
+        /**
+         * Occurrences per million, outside which a word is not worth an article.
+         *
+         * Above the ceiling a learner already knows it — nobody looks up "value" or "will".
+         * Below the floor it is too marginal to spend tokens on. The gate exists so the
+         * hand-assembled list can be slightly wrong in either direction without costing
+         * anything.
+         */
+        private const val MAX_FREQUENCY_PER_MILLION = 60.0
+        private const val MIN_FREQUENCY_PER_MILLION = 0.3
+    }
+
+    /** The band, deduplicated and in a stable order so a restart resumes where it left off. */
+    fun words(): List<String> = WORD_LIST_RESOURCES
+        .flatMap { resource ->
+            javaClass.getResourceAsStream(resource)?.bufferedReader()?.readLines().orEmpty()
+        }
+        .map { it.trim().lowercase() }
+        .filter { it.isNotBlank() && !it.startsWith("#") && it.all { c -> c.isLetter() } }
+        .distinct()
+
+    fun status() = WarmupStatus(
+        running = job?.isActive == true,
+        total = total.get(),
+        processed = processed.get(),
+        written = written.get(),
+        alreadyPresent = alreadyPresent.get(),
+        skipped = skipped.get(),
+        notFound = notFound.get(),
+        failed = failed.get(),
+        currentWord = current.get(),
+        wordsPerHour = EnvConfig.warmupWordsPerHour,
+        startedAt = startedAt.get(),
+        lastError = lastError.get(),
+        poolConfigured = n.startapp.services.ai.LlmProvider.pool().isConfigured
+    )
+
+    /** @return false when a run is already in progress. */
+    fun start(limit: Int = 0): Boolean {
+        if (job?.isActive == true) return false
+
+        val all = words()
+        val slice = if (limit > 0) all.take(limit) else all
+
+        processed.set(0); written.set(0); alreadyPresent.set(0)
+        skipped.set(0); notFound.set(0); failed.set(0)
+        lastError.set(null)
+        total.set(slice.size)
+        startedAt.set(System.currentTimeMillis())
+
+        val perHour = EnvConfig.warmupWordsPerHour.coerceIn(1, 240)
+        val spacingMs = 3_600_000L / perHour
+
+        logger.info(
+            "Warm-up starting: {} words at {}/hour (~{} min between words)",
+            slice.size, perHour, spacingMs / 60_000
+        )
+
+        job = scope.launch {
+            for (word in slice) {
+                if (!isActive) break
+                current.set(word)
+                try {
+                    if (isTooCommonOrTooRare(word)) {
+                        skipped.incrementAndGet()
+                    } else {
+                        when (lookupService.warm(word)) {
+                            LookupService.WarmOutcome.WRITTEN -> written.incrementAndGet()
+                            LookupService.WarmOutcome.ALREADY_PRESENT -> alreadyPresent.incrementAndGet()
+                            LookupService.WarmOutcome.NOT_FOUND -> notFound.incrementAndGet()
+                            LookupService.WarmOutcome.FAILED -> failed.incrementAndGet()
+                        }
+                    }
+                } catch (e: Exception) {
+                    // One bad word must never end the run; there are two thousand more.
+                    failed.incrementAndGet()
+                    lastError.set("${word}: ${e.message?.take(200)}")
+                    logger.warn("Warm-up failed on '{}': {}", word, e.message)
+                }
+                processed.incrementAndGet()
+                current.set(null)
+
+                // Jittered so the traffic does not arrive on a metronome.
+                if (isActive) delay(spacingMs + Random.nextLong(-spacingMs / 5, spacingMs / 5))
+            }
+            logger.info(
+                "Warm-up finished: {} written, {} already present, {} skipped, {} not found, {} failed",
+                written.get(), alreadyPresent.get(), skipped.get(), notFound.get(), failed.get()
+            )
+            current.set(null)
+        }
+        return true
+    }
+
+    fun stop() {
+        job?.cancel()
+        current.set(null)
+        logger.info("Warm-up stopped after {} words", processed.get())
+    }
+
+    /** A missing or unreachable oracle must not block warming — assume the word is worth it. */
+    private suspend fun isTooCommonOrTooRare(word: String): Boolean {
+        val frequency = runCatching { oracle?.frequency(word) }.getOrNull() ?: return false
+        val outside = frequency > MAX_FREQUENCY_PER_MILLION || frequency < MIN_FREQUENCY_PER_MILLION
+        if (outside) logger.debug("Warm-up skipping '{}' (frequency {}/M)", word, frequency)
+        return outside
+    }
+
+    fun close() = job?.cancel()
+}

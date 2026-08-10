@@ -22,6 +22,14 @@ import org.slf4j.LoggerFactory
 interface WordOracle {
     suspend fun exists(word: String): Boolean
     suspend fun spellingSuggestions(word: String, max: Int = 5): List<String>
+
+    /**
+     * Occurrences per million words, or null when unknown.
+     *
+     * Default null so a test fake need not implement it: callers must already treat "unknown"
+     * as "no opinion" rather than as a reason to reject a word.
+     */
+    suspend fun frequency(word: String): Double? = null
 }
 
 /**
@@ -65,6 +73,15 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
     } catch (e: Exception) {
         logger.debug("DataMuse spelling suggestions failed for '$word': ${e.message}")
         emptyList()
+    }
+
+    override suspend fun frequency(word: String): Double? = try {
+        query(word.trim().lowercase(), 1)
+            .firstOrNull { it.word.equals(word.trim(), ignoreCase = true) }
+            ?.let(::frequencyOf)
+    } catch (e: Exception) {
+        logger.debug("DataMuse frequency lookup failed for '$word': ${e.message}")
+        null
     }
 
     private suspend fun query(word: String, max: Int): List<DataMuseWord> {

@@ -26,7 +26,12 @@ data class LlmRequest(
     /** null omits the field entirely — required by models that only accept the default. */
     val temperature: Double? = 0.2,
     val responseFormat: ResponseFormat = ResponseFormat.Text,
-    val maxRetries: Int = 2
+    val maxRetries: Int = 2,
+    /**
+     * Which provider carries this request. Bulk work stays on the reserve pool so it can never
+     * spend the quota a waiting user depends on.
+     */
+    val route: LlmRoute = LlmRoute.LIVE
 )
 
 data class LlmUsage(
@@ -42,8 +47,18 @@ data class LlmResult(
     val attempts: Int
 )
 
-/** Raised when the provider is unreachable, misconfigured, or keeps returning nothing usable. */
-class LlmException(message: String, cause: Throwable? = null) : Exception(message, cause)
+/**
+ * Raised when the provider is unreachable, misconfigured, or keeps returning nothing usable.
+ *
+ * [worthSpillingOver] separates "this provider has no capacity" — rate limits, outages, bad
+ * credentials — from "this request is malformed", which would fail identically on the reserve
+ * and so must not be retried there.
+ */
+class LlmException(
+    message: String,
+    cause: Throwable? = null,
+    val worthSpillingOver: Boolean = false
+) : Exception(message, cause)
 
 interface LlmClient {
     suspend fun complete(request: LlmRequest): LlmResult

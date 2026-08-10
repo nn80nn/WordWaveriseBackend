@@ -337,8 +337,8 @@ class LookupService(
             "lemma" to lemma,
             "model" to EnvConfig.aiModel,
             "endpoint" to llmEndpoint,
-            "structuredMode" to n.startapp.services.ai.AiCompat.structuredMode.name,
-            "tokenParam" to n.startapp.services.ai.AiCompat.tokenParam,
+            "structuredMode" to n.startapp.services.ai.AiCompat.structuredMode("primary").name,
+            "tokenParam" to n.startapp.services.ai.AiCompat.tokenParam("primary"),
             "sourceFragments" to aggregate.sourceDefinitions.size.toString(),
             "elapsedMs" to (System.currentTimeMillis() - started).toString(),
             "degraded" to result.entry.degraded.toString(),
@@ -420,6 +420,58 @@ class LookupService(
 
             else -> null
         }
+    }
+
+    /** What happened to one warm-up word. */
+    enum class WarmOutcome { ALREADY_PRESENT, WRITTEN, NOT_FOUND, FAILED }
+
+    /**
+     * Builds and stores the article for one word ahead of anyone asking for it.
+     *
+     * Deliberately the slow path in full — scrapers included — because the whole point is that
+     * the result is the same artefact a real lookup would have produced, only paid for in
+     * advance. Runs on the reserve pool so the bulk job cannot spend the user-facing quota.
+     */
+    suspend fun warm(word: String): WarmOutcome {
+        val lemma = word.trim().lowercase()
+        if (lemma.isBlank()) return WarmOutcome.NOT_FOUND
+
+        val cacheKey = LexicalEntryRepository.cacheKey(
+            lemma = lemma,
+            kind = LexicalKind.WORD.name,
+            promptVersion = LexicalPromptBuilder.PROMPT_VERSION,
+            model = EnvConfig.aiModel
+        )
+        if (repository.find(cacheKey) != null) return WarmOutcome.ALREADY_PRESENT
+
+        val aggregate = try {
+            aggregationService.aggregateDetailed(lemma, skipScrapers = false)
+        } catch (e: NotFoundException) {
+            logger.info("Warm-up: '{}' is in no dictionary, skipping", lemma)
+            return WarmOutcome.NOT_FOUND
+        }
+
+        val result = withTimeoutOrNull(ANNOTATION_DEADLINE_MS) {
+            annotationService.annotate(
+                lemma, lemma, LexicalKind.WORD, aggregate,
+                route = n.startapp.services.ai.LlmRoute.BULK
+            )
+        } ?: return WarmOutcome.FAILED
+
+        if (result.entry.degraded) {
+            logger.warn("Warm-up: '{}' degraded ({})", lemma, result.reason)
+            return WarmOutcome.FAILED
+        }
+
+        repository.save(
+            cacheKey = cacheKey,
+            entry = result.entry,
+            raw = aggregate.response,
+            sourceFingerprint = LexicalEntryRepository.fingerprint(
+                aggregate.sourceDefinitions.map { it.definition }
+            )
+        )
+        return WarmOutcome.WRITTEN
     }
 
     /** Drops every cached article for a lemma so the next lookup regenerates it. */

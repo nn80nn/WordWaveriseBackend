@@ -102,6 +102,22 @@ object EnvConfig {
     val aiTimeoutMs: Long get() = get("AI_TIMEOUT_MS", "150000").toLongOrNull() ?: 150_000L
     val aiMaxRetries: Int get() = getInt("AI_MAX_RETRIES", 2)
 
+    // ── Reserve provider ────────────────────────────────────────────────────
+    // A second endpoint with its own quota. Two jobs: it carries the corpus warm-up, so a bulk
+    // run cannot spend the budget real lookups depend on, and it catches user-facing requests
+    // when the primary is rate limited.
+    val aiDomenPool: String get() = get("AI_DOMEN_POOL", "")
+    val aiApiKeyPool: String get() = get("AI_API_POOL", "")
+    val aiModelPool: String get() = get("AI_MODEL_POOL", "").ifBlank { aiModel }
+
+    // ── Corpus warm-up ──────────────────────────────────────────────────────
+    /** Paced far below the scraper rate limit so warming never queues ahead of a real lookup. */
+    val warmupWordsPerHour: Int get() = getInt("WARMUP_WORDS_PER_HOUR", 30)
+    /** Resume automatically after a restart; the corpus itself records what is already done. */
+    val warmupEnabled: Boolean get() = get("WARMUP_ENABLED", "false").equals("true", true)
+    /** 0 = the whole list. Set lower to try a slice first. */
+    val warmupLimit: Int get() = getInt("WARMUP_LIMIT", 0)
+
     /**
      * Strongest response constraint to attempt: json_schema | json_object | none.
      * Downgraded automatically if the provider rejects it.

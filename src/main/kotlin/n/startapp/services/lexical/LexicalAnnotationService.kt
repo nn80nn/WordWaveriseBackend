@@ -13,6 +13,7 @@ import n.startapp.models.lexical.SourceRef
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.LlmJson
 import n.startapp.services.ai.LlmRequest
+import n.startapp.services.ai.LlmRoute
 import n.startapp.services.ai.ResponseFormat
 import n.startapp.services.dictionary.AggregatedWord
 import n.startapp.utils.EnvConfig
@@ -75,15 +76,17 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         lemma: String,
         queryForm: String,
         kind: LexicalKind,
-        aggregate: AggregatedWord
+        aggregate: AggregatedWord,
+        /** BULK keeps a warm-up run on the reserve pool, away from the user-facing quota. */
+        route: LlmRoute = LlmRoute.LIVE
     ): AnnotationResult {
         val sources = buildSources(aggregate.sourceDefinitions)
         val partsOfSpeech = LexicalPromptBuilder.partsOfSpeech(sources)
 
         return if (partsOfSpeech.size > 1) {
-            annotateByPartOfSpeech(lemma, queryForm, kind, aggregate, sources, partsOfSpeech)
+            annotateByPartOfSpeech(lemma, queryForm, kind, aggregate, sources, partsOfSpeech, route)
         } else {
-            annotateWhole(lemma, queryForm, kind, aggregate, sources, onlyPos = null)
+            annotateWhole(lemma, queryForm, kind, aggregate, sources, onlyPos = null, route = route)
         }
     }
 
@@ -94,7 +97,8 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         kind: LexicalKind,
         aggregate: AggregatedWord,
         sources: List<SourceRef>,
-        partsOfSpeech: List<String>
+        partsOfSpeech: List<String>,
+        route: LlmRoute
     ): AnnotationResult = coroutineScope {
         // Capped so a word with many parts of speech cannot fan out into a rate limit.
         val targets = partsOfSpeech.take(MAX_PARALLEL_POS)
@@ -104,6 +108,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                 annotateWhole(
                     lemma, queryForm, kind, aggregate, sources,
                     onlyPos = pos,
+                    route = route,
                     // Etymology and usage notes belong to the word, not to a section: asking
                     // every call for them would duplicate the answer and the tokens.
                     includeEntryLevel = index == 0
@@ -148,6 +153,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         aggregate: AggregatedWord,
         sources: List<SourceRef>,
         onlyPos: String?,
+        route: LlmRoute = LlmRoute.LIVE,
         includeEntryLevel: Boolean = true
     ): AnnotationResult {
         val raw = aggregate.response
@@ -170,7 +176,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         var lastCode = "validation_failed"
 
         repeat(2) { attempt ->
-            when (val outcome = attemptAnnotation(system, user, onlyPos, sources, lemma, queryForm, kind, aggregate, grounded)) {
+            when (val outcome = attemptAnnotation(system, user, onlyPos, route, sources, lemma, queryForm, kind, aggregate, grounded)) {
                 is AttemptResult.Success -> return AnnotationResult(outcome.entry)
                 is AttemptResult.Retry -> {
                     logger.warn(
@@ -211,11 +217,12 @@ class LexicalAnnotationService(private val llm: LlmClient) {
     suspend fun annotateUngrounded(
         lemma: String,
         queryForm: String,
-        kind: LexicalKind
+        kind: LexicalKind,
+        route: LlmRoute = LlmRoute.LIVE
     ): AnnotationResult {
         val empty = WordDetailResponse(word = lemma, definitions = emptyList())
         val aggregate = AggregatedWord(empty, emptyList(), emptyMap())
-        val result = annotate(lemma, queryForm, kind, aggregate)
+        val result = annotate(lemma, queryForm, kind, aggregate, route)
         return result.copy(entry = result.entry.copy(aiGenerated = true))
     }
 
@@ -229,6 +236,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         system: String,
         user: String,
         onlyPos: String?,
+        route: LlmRoute,
         sources: List<SourceRef>,
         lemma: String,
         queryForm: String,
@@ -253,7 +261,8 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                     ),
                     // Annotation runs in the background, so it can afford to wait out a
                     // rate limit rather than degrade the article.
-                    maxRetries = 3
+                    maxRetries = 3,
+                    route = route
                 )
             )
         } catch (e: Exception) {

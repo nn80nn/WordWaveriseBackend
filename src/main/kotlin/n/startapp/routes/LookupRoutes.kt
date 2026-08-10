@@ -8,6 +8,7 @@ import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
 import n.startapp.services.LookupService
 import n.startapp.services.query.RuEnTranslationService
+import n.startapp.services.warmup.WarmupService
 import n.startapp.utils.EnvConfig
 
 /**
@@ -16,7 +17,8 @@ import n.startapp.utils.EnvConfig
  */
 fun Route.lookupRoutes(
     lookupService: LookupService,
-    ruEnTranslationService: RuEnTranslationService
+    ruEnTranslationService: RuEnTranslationService,
+    warmupService: WarmupService
 ) {
     route("/api/v2/words") {
         get("/lookup") {
@@ -32,6 +34,45 @@ fun Route.lookupRoutes(
             val query = call.request.queryParameters["query"]
                 ?: throw BadRequestException("Query parameter 'query' is required")
             call.respond(ApiResponse.success(ruEnTranslationService.translate(query)))
+        }
+    }
+
+    // Corpus warm-up: builds articles ahead of demand, on the reserve pool.
+    route("/api/admin/warmup") {
+        get("/status") {
+            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
+                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
+                return@get
+            }
+            call.respond(ApiResponse.success(warmupService.status()))
+        }
+
+        post("/start") {
+            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
+                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
+                return@post
+            }
+            // limit=0 means the whole list; start small to see how a slice behaves first.
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 0
+            val started = warmupService.start(limit)
+            call.respond(
+                ApiResponse.success(
+                    mapOf(
+                        "started" to started,
+                        "message" to if (started) "warm-up running" else "already running",
+                        "status" to warmupService.status()
+                    )
+                )
+            )
+        }
+
+        post("/stop") {
+            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
+                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
+                return@post
+            }
+            warmupService.stop()
+            call.respond(ApiResponse.success(warmupService.status()))
         }
     }
 

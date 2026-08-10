@@ -105,7 +105,7 @@ fun Application.configureRouting(services: ServiceRegistry) {
         }
 
         // v2 lookup: LLM-annotated article, with the raw aggregate alongside it
-        lookupRoutes(services.lookupService, services.ruEnTranslationService)
+        lookupRoutes(services.lookupService, services.ruEnTranslationService, services.warmupService)
 
         // Word-in-sentence analysis
         contextRoutes(services.contextAnalysisService)
