@@ -54,11 +54,15 @@ class LookupService(
     private val RETRY_AFTER_MS = 2_500
 
     /**
-     * Hard ceiling on one annotation. The LLM client already retries with backoff, so an
-     * unhealthy provider can otherwise keep a job alive for minutes — during which every
-     * request for that word reports PENDING and the user waits on something that will not come.
+     * Hard ceiling on one annotation, sized above the client's own retry budget so it catches a
+     * wedged job rather than a merely slow one.
+     *
+     * A common word yields two dozen source fragments across three dictionaries, and the article
+     * written from them takes minutes — cutting that off produced a degraded entry for exactly
+     * the words that most deserve a good one. Nobody is waiting on this: the raw response has
+     * already gone out.
      */
-    private val ANNOTATION_DEADLINE_MS = 150_000L
+    private val ANNOTATION_DEADLINE_MS = 420_000L
 
     /** Failures the provider may recover from on its own — mainly rate limiting. */
     private val TRANSIENT_REASONS = setOf("llm_call_failed", "llm_timeout")

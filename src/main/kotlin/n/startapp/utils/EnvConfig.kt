@@ -95,7 +95,11 @@ object EnvConfig {
     /** gpt-5.x rejects the field outright; llama and most OSS models accept it. */
     val aiSupportsTemperature: Boolean get() = get("AI_SUPPORTS_TEMPERATURE", "true").equals("true", true)
 
-    val aiTimeoutMs: Long get() = get("AI_TIMEOUT_MS", "60000").toLongOrNull() ?: 60_000L
+    /**
+     * Per-request ceiling. A full annotated article is thousands of tokens and measured at ~60s
+     * on its own, so the old 60s default cut off the very call the layer exists for.
+     */
+    val aiTimeoutMs: Long get() = get("AI_TIMEOUT_MS", "150000").toLongOrNull() ?: 150_000L
     val aiMaxRetries: Int get() = getInt("AI_MAX_RETRIES", 2)
 
     /**
