@@ -134,10 +134,17 @@ class OpenAiCompatibleLlmClient : LlmClient {
                     }
 
                     else -> {
-                        lastError = LlmException("AI provider returned ${response.status.value}")
+                        // Read the body: a 5xx from a gateway usually still explains itself
+                        // ("no healthy upstream", "model not found"), and without it the only
+                        // signal is a bare status code that fits a dozen different causes.
+                        val body = runCatching { response.bodyAsText() }.getOrDefault("").take(300)
+                        lastError = LlmException(
+                            "AI provider returned ${response.status.value}" +
+                                if (body.isNotBlank()) ": $body" else ""
+                        )
                         logger.warn(
-                            "llm task={} model={} status={} attempt={}/{}",
-                            request.task, model, response.status.value, attempt, request.maxRetries + 1
+                            "llm task={} model={} status={} attempt={}/{} body={}",
+                            request.task, model, response.status.value, attempt, request.maxRetries + 1, body
                         )
 
                         // A gateway in front of the model often reports a rejected request body

@@ -298,7 +298,7 @@ class LookupService(
             "degraded" to result.entry.degraded.toString(),
             "posGroups" to result.entry.posGroups.size.toString(),
             "reason" to (result.reason ?: "-"),
-            "detail" to (result.detail ?: "-")
+            "detail" to (result.detail ?: "-").take(600)
         )
     }
 
