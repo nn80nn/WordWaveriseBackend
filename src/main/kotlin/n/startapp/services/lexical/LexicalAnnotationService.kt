@@ -156,10 +156,11 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                     task = "annotate",
                     system = system,
                     user = user,
-                    // Providers reserve maxTokens against the per-minute token budget, so an
-                    // oversized ceiling gets the request rate-limited rather than truncated.
-                    // 2500 comfortably fits a rich multi-POS article.
-                    maxTokens = 2500,
+                    // A full multi-POS article with bilingual examples runs well past 2500
+                    // tokens — that ceiling truncated the JSON mid-string, and a truncated
+                    // reply can never parse. The client grants one larger budget on top of
+                    // this if the model still hits the ceiling.
+                    maxTokens = 4500,
                     temperature = 0.2,
                     responseFormat = ResponseFormat.JsonSchema(
                         name = LEXICAL_ENTRY_SCHEMA_NAME,

@@ -79,6 +79,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
         var attempt = 0
         var lastError: Exception? = null
         var relaxations = 0
+        var budgetRaised = false
 
         // maxRetries counts retries, so the loop body runs maxRetries + 1 times. Dialect
         // adaptations (400s that tell us how to fix the body) do not consume an attempt.
@@ -89,7 +90,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
                 val response = httpClient.post(endpoint) {
                     contentType(ContentType.Application.Json)
                     header("Authorization", "Bearer ${EnvConfig.aiApiKey}")
-                    setBody(buildBody(request, model))
+                    setBody(buildBody(request, model, budgetRaised))
                 }
                 val elapsed = System.currentTimeMillis() - started
 
@@ -108,6 +109,19 @@ class OpenAiCompatibleLlmClient : LlmClient {
                             request.task, model, usage.promptTokens, usage.completionTokens,
                             elapsed, attempt, choice?.finishReason
                         )
+                        // A reply cut off at the token ceiling is not a model failure and not
+                        // retryable as-is: the JSON is truncated mid-string and will never parse.
+                        // Only a bigger budget helps, so grant one once.
+                        if (choice?.finishReason == "length" && !budgetRaised) {
+                            budgetRaised = true
+                            logger.warn(
+                                "llm task={} hit the token ceiling ({}); retrying with a larger budget",
+                                request.task, AiCompat.effectiveMaxTokens(request.maxTokens)
+                            )
+                            attempt--
+                            continue
+                        }
+
                         if (content.isEmpty()) {
                             // Reasoning models spend the completion budget on hidden reasoning
                             // tokens, so too small a cap yields an empty message rather than an error.
@@ -164,7 +178,11 @@ class OpenAiCompatibleLlmClient : LlmClient {
                         // looks like a transient outage and retrying the same body can never
                         // succeed. Drop one optional field per failure and retry immediately;
                         // each relaxation is process-wide, so the cost is paid once per deploy.
-                        if (response.status.value >= 500 && relaxations < MAX_RELAXATIONS && relax(request)) {
+                        if (response.status.value >= 500 &&
+                            looksLikeRequestRejection(body) &&
+                            relaxations < MAX_RELAXATIONS &&
+                            relax(request)
+                        ) {
                             relaxations++
                             attempt--
                             continue
@@ -201,6 +219,19 @@ class OpenAiCompatibleLlmClient : LlmClient {
      *
      * @return true when something changed and the request is worth re-sending.
      */
+    /**
+     * A gateway that rejected our body says so in a structured error; one whose upstream is
+     * simply down serves a plain error page ("Bad Gateway").
+     *
+     * Without this distinction an outage looks exactly like a rejected field, and the ladder
+     * strips the schema and the temperature on the way down — permanently, for the whole
+     * process — for a failure that had nothing to do with the request.
+     */
+    private fun looksLikeRequestRejection(body: String): Boolean {
+        val trimmed = body.trim()
+        return trimmed.startsWith("{") && trimmed.contains("\"error\"", ignoreCase = true)
+    }
+
     private fun relax(request: LlmRequest): Boolean {
         if (request.responseFormat !is ResponseFormat.Text &&
             AiCompat.structuredMode != AiCompat.StructuredMode.NONE &&
@@ -255,7 +286,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
         return AiCompat.adaptTo(errorBody, logger)
     }
 
-    private fun buildBody(request: LlmRequest, model: String): JsonObject = buildJsonObject {
+    private fun buildBody(request: LlmRequest, model: String, doubleBudget: Boolean = false): JsonObject = buildJsonObject {
         put("model", model)
         putJsonArray("messages") {
             request.system?.let { system ->
@@ -269,7 +300,8 @@ class OpenAiCompatibleLlmClient : LlmClient {
                 put("content", request.user)
             }
         }
-        put(AiCompat.tokenParam, AiCompat.effectiveMaxTokens(request.maxTokens))
+        val budget = if (doubleBudget) request.maxTokens * 2 else request.maxTokens
+        put(AiCompat.tokenParam, AiCompat.effectiveMaxTokens(budget))
         if (AiCompat.supportsTemperature) request.temperature?.let { put("temperature", it) }
         putResponseFormat(request.responseFormat)
     }
