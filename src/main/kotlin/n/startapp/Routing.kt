@@ -28,10 +28,10 @@ import n.startapp.services.SuggestService
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 
-fun Application.configureRouting() {
-    val dictionaryService = DictionaryService()
-    val suggestService = SuggestService()
-    val aiService = AiService()
+fun Application.configureRouting(services: ServiceRegistry) {
+    val dictionaryService = services.dictionaryService
+    val suggestService = services.suggestService
+    val aiService = services.aiService
 
     routing {
         get("/") {

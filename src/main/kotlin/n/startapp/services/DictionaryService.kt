@@ -22,7 +22,7 @@ import org.slf4j.LoggerFactory
 /**
  * Enhanced service for dictionary lookups with multi-source aggregation and caching
  */
-class DictionaryService {
+class DictionaryService(private val aiService: AiService) {
     private val logger = LoggerFactory.getLogger(DictionaryService::class.java)
     private val translationApiUrl = "https://api.mymemory.translated.net/get"
 
@@ -47,7 +47,6 @@ class DictionaryService {
 
     private val aggregationService = DictionaryAggregationService()
     private val cacheService = CacheService()
-    private val aiService = AiService()
 
     /**
      * Search for word with enhanced details from multiple sources

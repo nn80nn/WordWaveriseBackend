@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.LlmCache
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
 import n.startapp.database.tables.TestingRequests
@@ -52,7 +53,9 @@ object DatabaseFactory {
             // Create tables if they don't exist
             transaction {
                 println("📋 Creating database tables if they don't exist...")
-                SchemaUtils.createMissingTablesAndColumns(Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests)
+                SchemaUtils.createMissingTablesAndColumns(
+                    Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests, LlmCache
+                )
                 println("✅ Database tables ready")
             }
         } catch (e: Exception) {

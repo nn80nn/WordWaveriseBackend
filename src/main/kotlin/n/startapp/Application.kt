@@ -26,7 +26,10 @@ fun Application.module() {
     configureExceptionHandling()
     configureHTTP()
     configureAuthentication()
-    configureRouting()
+
+    val services = ServiceRegistry()
+    configureRouting(services)
+    monitor.subscribe(ApplicationStopping) { services.close() }
 
     // Periodically purge accounts whose deletion grace period has elapsed
     val logger = LoggerFactory.getLogger("AccountDeletionJob")

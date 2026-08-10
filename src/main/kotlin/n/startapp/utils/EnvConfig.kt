@@ -98,6 +98,17 @@ object EnvConfig {
     val aiTimeoutMs: Long get() = get("AI_TIMEOUT_MS", "60000").toLongOrNull() ?: 60_000L
     val aiMaxRetries: Int get() = getInt("AI_MAX_RETRIES", 2)
 
+    /**
+     * Strongest response constraint to attempt: json_schema | json_object | none.
+     * Downgraded automatically if the provider rejects it.
+     */
+    val aiStructuredMode: n.startapp.services.ai.AiCompat.StructuredMode
+        get() = when (get("AI_STRUCTURED_MODE", "json_schema").lowercase()) {
+            "none" -> n.startapp.services.ai.AiCompat.StructuredMode.NONE
+            "json_object" -> n.startapp.services.ai.AiCompat.StructuredMode.JSON_OBJECT
+            else -> n.startapp.services.ai.AiCompat.StructuredMode.JSON_SCHEMA
+        }
+
     // Google OAuth
     val googleClientId: String get() = get("GOOGLE_CLIENT_ID", "")
 

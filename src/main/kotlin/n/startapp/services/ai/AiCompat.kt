@@ -24,11 +24,35 @@ object AiCompat {
      */
     private const val REASONING_BUDGET_FLOOR = 800
 
+    /** Strongest response constraint the provider has been observed to accept. */
+    enum class StructuredMode { JSON_SCHEMA, JSON_OBJECT, NONE }
+
     private val tokenParamRef = AtomicReference(EnvConfig.aiTokenParam)
     private val supportsTemperatureRef = AtomicBoolean(EnvConfig.aiSupportsTemperature)
+    private val structuredModeRef = AtomicReference(EnvConfig.aiStructuredMode)
 
     val tokenParam: String get() = tokenParamRef.get()
     val supportsTemperature: Boolean get() = supportsTemperatureRef.get()
+    val structuredMode: StructuredMode get() = structuredModeRef.get()
+
+    /**
+     * Steps the response-format constraint down one level after the provider rejected it.
+     * @return true when there was somewhere left to step down to.
+     */
+    fun downgradeStructuredMode(logger: Logger): Boolean {
+        val current = structuredModeRef.get()
+        val next = when (current) {
+            StructuredMode.JSON_SCHEMA -> StructuredMode.JSON_OBJECT
+            StructuredMode.JSON_OBJECT -> StructuredMode.NONE
+            StructuredMode.NONE -> return false
+        }
+        structuredModeRef.set(next)
+        logger.warn(
+            "AI provider rejected response_format={}; falling back to {} for the rest of this process. Output validation now carries more weight — set AI_STRUCTURED_MODE to silence this.",
+            current, next
+        )
+        return true
+    }
 
     fun effectiveMaxTokens(requested: Int): Int =
         if (tokenParam == "max_completion_tokens") maxOf(requested, REASONING_BUDGET_FLOOR)
