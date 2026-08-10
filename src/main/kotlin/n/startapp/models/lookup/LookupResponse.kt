@@ -31,6 +31,12 @@ data class LookupResponse(
     val notice: LookupNotice? = null,
     val entry: LexicalEntry? = null,
     val annotationStatus: AnnotationStatus,
+    /**
+     * Machine-readable reason accompanying [AnnotationStatus.DEGRADED]
+     * (llm_call_failed | llm_timeout | parse_failed | validation_failed).
+     * A code only — provider error text stays in the logs and the admin diagnose endpoint.
+     */
+    val annotationNote: String? = null,
     /** Set with [AnnotationStatus.PENDING]: how long to wait before re-issuing the same request. */
     val retryAfterMs: Int? = null,
     /** Always present when the dictionary pipeline ran — powers the sources view. */

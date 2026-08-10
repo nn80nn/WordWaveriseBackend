@@ -41,6 +41,21 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         )
 
     /**
+     * Outcome of an annotation attempt.
+     *
+     * [reason] and [detail] are only set when the article had to be degraded. They exist because
+     * a failing annotation is otherwise invisible from outside the process: the user just sees a
+     * dictionary with no Russian, and there is nothing in the response to say why.
+     */
+    data class AnnotationResult(
+        val entry: LexicalEntry,
+        /** Stable machine-readable code: llm_call_failed | parse_failed | validation_failed. */
+        val reason: String? = null,
+        /** Human-readable specifics for logs and the admin diagnose endpoint. */
+        val detail: String? = null
+    )
+
+    /**
      * Annotates [aggregate]. Never throws for model-side problems: a failure yields a
      * `degraded` entry built from the raw data so the user still gets the dictionary content.
      */
@@ -49,7 +64,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         queryForm: String,
         kind: LexicalKind,
         aggregate: AggregatedWord
-    ): LexicalEntry {
+    ): AnnotationResult {
         val raw = aggregate.response
         val sources = buildSources(aggregate.sourceDefinitions)
         val grounded = sources.isNotEmpty()
@@ -65,31 +80,46 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         )
 
         var user = baseUser
+        var lastIssues = emptyList<String>()
+        var lastCode = "validation_failed"
+
         repeat(2) { attempt ->
-            val outcome = attemptAnnotation(system, user, sources, lemma, queryForm, kind, aggregate, grounded)
-            when (outcome) {
-                is AttemptResult.Success -> return outcome.entry
+            when (val outcome = attemptAnnotation(system, user, sources, lemma, queryForm, kind, aggregate, grounded)) {
+                is AttemptResult.Success -> return AnnotationResult(outcome.entry)
                 is AttemptResult.Retry -> {
                     logger.warn(
                         "Annotation attempt {} for '{}' rejected: {}",
                         attempt + 1, lemma, outcome.issues.joinToString("; ").take(400)
                     )
+                    lastIssues = outcome.issues
+                    lastCode = outcome.code
                     user = baseUser + LexicalPromptBuilder.repairSuffix(outcome.issues)
                 }
                 is AttemptResult.Abort -> {
                     logger.error("Annotation for '{}' aborted: {}", lemma, outcome.reason)
-                    return LexicalEntryFallback.fromRaw(raw, lemma, queryForm, kind, sources)
+                    return AnnotationResult(
+                        entry = LexicalEntryFallback.fromRaw(raw, lemma, queryForm, kind, sources),
+                        reason = "llm_call_failed",
+                        detail = outcome.reason
+                    )
                 }
             }
         }
 
-        logger.error("Annotation for '{}' failed validation twice — serving degraded entry", lemma)
-        return LexicalEntryFallback.fromRaw(raw, lemma, queryForm, kind, sources)
+        logger.error(
+            "Annotation for '{}' failed twice ({}) — serving degraded entry: {}",
+            lemma, lastCode, lastIssues.joinToString("; ").take(400)
+        )
+        return AnnotationResult(
+            entry = LexicalEntryFallback.fromRaw(raw, lemma, queryForm, kind, sources),
+            reason = lastCode,
+            detail = lastIssues.joinToString("; ").take(600)
+        )
     }
 
     private sealed interface AttemptResult {
         data class Success(val entry: LexicalEntry) : AttemptResult
-        data class Retry(val issues: List<String>) : AttemptResult
+        data class Retry(val issues: List<String>, val code: String) : AttemptResult
         data class Abort(val reason: String) : AttemptResult
     }
 
@@ -127,11 +157,14 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         val draft = try {
             json.decodeFromString<DraftEntry>(payload)
         } catch (e: Exception) {
-            return AttemptResult.Retry(listOf("ответ не разобрался как JSON по схеме: ${e.message}"))
+            return AttemptResult.Retry(
+                listOf("ответ не разобрался как JSON по схеме: ${e.message?.take(300)}"),
+                "parse_failed"
+            )
         }
 
         val validation = LexicalEntryValidator.validate(draft, sources, lemma, kind, payload)
-        if (validation.fatal) return AttemptResult.Retry(validation.issues)
+        if (validation.fatal) return AttemptResult.Retry(validation.issues, "validation_failed")
 
         if (validation.issues.isNotEmpty()) {
             logger.info("Annotation for '{}' repaired: {}", lemma, validation.issues.joinToString("; ").take(400))
