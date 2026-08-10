@@ -13,7 +13,12 @@ import n.startapp.models.lexical.parseRegister
 data class ValidationResult(
     val posGroups: List<PosGroup>,
     val issues: List<String>,
-    val fatal: Boolean
+    val fatal: Boolean,
+    /**
+     * Bounded code naming why the result was rejected, so the failure mode is diagnosable from
+     * the API response without echoing model output: `no_senses` | `ignored_sources`.
+     */
+    val fatalCode: String? = null
 )
 
 /**
@@ -94,17 +99,18 @@ object LexicalEntryValidator {
         }
 
         val allSenses = groups.flatMap { it.senses }
-        var fatal = false
+        var fatalCode: String? = null
 
         if (groups.isEmpty() || allSenses.isEmpty()) {
-            issues += "в ответе не осталось ни одного значения"
-            fatal = true
+            issues += "в ответе не осталось ни одного значения " +
+                "(групп в ответе модели: ${draft.posGroups.size}, значений: ${draft.posGroups.sumOf { it.senses.size }})"
+            fatalCode = "no_senses"
         } else if (sources.size >= GENERATED_SHARE_MIN_SOURCES) {
             val generatedShare = allSenses.count { it.generated }.toDouble() / allSenses.size
             if (generatedShare > MAX_GENERATED_SHARE) {
                 issues += "модель проигнорировала источники: ${(generatedShare * 100).toInt()}% значений " +
                     "помечены как выдуманные при ${sources.size} доступных фрагментах"
-                fatal = true
+                fatalCode = "ignored_sources"
             }
         }
 
@@ -112,7 +118,7 @@ object LexicalEntryValidator {
             issues += "модель вернула лемму «${draft.lemma}» вместо «$lemma» — заменена на запрошенную"
         }
 
-        return ValidationResult(groups, issues, fatal)
+        return ValidationResult(groups, issues, fatalCode != null, fatalCode)
     }
 
     private fun sanitizeSense(

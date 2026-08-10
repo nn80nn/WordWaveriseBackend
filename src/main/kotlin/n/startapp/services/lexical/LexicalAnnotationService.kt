@@ -164,7 +164,9 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         }
 
         val validation = LexicalEntryValidator.validate(draft, sources, lemma, kind, payload)
-        if (validation.fatal) return AttemptResult.Retry(validation.issues, "validation_failed")
+        if (validation.fatal) {
+            return AttemptResult.Retry(validation.issues, "validation_failed:${validation.fatalCode}")
+        }
 
         if (validation.issues.isNotEmpty()) {
             logger.info("Annotation for '{}' repaired: {}", lemma, validation.issues.joinToString("; ").take(400))

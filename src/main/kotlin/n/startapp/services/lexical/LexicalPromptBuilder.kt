@@ -10,7 +10,59 @@ import n.startapp.models.lexical.SourceRef
 object LexicalPromptBuilder {
 
     /** Bump on any prompt change. Part of the persistent cache key. */
-    const val PROMPT_VERSION = 1
+    const val PROMPT_VERSION = 2
+
+    /**
+     * The output contract, spelled out in the prompt as well as in `response_format`.
+     *
+     * Not redundant: providers that do not support `json_schema` are downgraded to plain
+     * `json_object`, and a model told only "return JSON" invents its own field names — which
+     * the validator then discards as empty, failing every annotation. The schema constrains
+     * the reply where it is enforced; this makes the same shape reachable where it is not.
+     */
+    private val SHAPE = """
+        Структура ответа — ровно такая, других полей быть не должно:
+
+        {
+          "lemma": "строка",
+          "kind": "WORD" | "PHRASE" | "IDIOM" | "PHRASAL_VERB" | "ABBREVIATION" | "PROPER_NOUN",
+          "etymology": "строка или null",
+          "frequencyBand": "очень частотное" | "частотное" | "редкое" | null,
+          "usageNotes": ["строка", ...],
+          "posGroups": [
+            {
+              "pos": ${ALLOWED_POS.joinToString(" | ") { "\"$it\"" }},
+              "posRu": "название части речи по-русски",
+              "forms": {
+                "plural": "строка или null", "past": "строка или null",
+                "pastParticiple": "строка или null", "presentParticiple": "строка или null",
+                "thirdPerson": "строка или null", "comparative": "строка или null",
+                "superlative": "строка или null"
+              },
+              "senses": [
+                {
+                  "definitionEn": "определение по-английски",
+                  "definitionRu": "объяснение по-русски одним предложением",
+                  "translationsRu": ["1-4 коротких русских эквивалента"],
+                  "register": "neutral" | "formal" | "informal" | "slang" | "vulgar" | "dated" | "literary" | "technical",
+                  "cefr": "A1" | "A2" | "B1" | "B2" | "C1" | "C2" | null,
+                  "domain": "строка или null",
+                  "examples": [{ "en": "предложение", "ru": "перевод", "sourceRef": число или null }],
+                  "collocations": [{ "pattern": "строка", "ru": "строка или null" }],
+                  "synonyms": ["строка", ...],
+                  "antonyms": ["строка", ...],
+                  "sourceRefs": [числа],
+                  "generated": true | false,
+                  "usageNote": "строка или null"
+                }
+              ]
+            }
+          ]
+        }
+
+        Обязательны и никогда не пустые: definitionEn, definitionRu, translationsRu (минимум 1),
+        examples (минимум 1, с переводом). Значение без русского перевода будет отброшено.
+    """.trimIndent()
 
     /** Guard rails for how much raw material is worth sending. */
     const val MAX_FRAGMENTS_PER_SOURCE = 12
@@ -74,7 +126,8 @@ object LexicalPromptBuilder {
         8. Никакого markdown, никаких пояснений вне JSON.
     """.trimIndent()
 
-    fun system(grounded: Boolean): String = if (grounded) SYSTEM_GROUNDED else SYSTEM_UNGROUNDED
+    fun system(grounded: Boolean): String =
+        (if (grounded) SYSTEM_GROUNDED else SYSTEM_UNGROUNDED) + "\n\n" + SHAPE
 
     /**
      * Trims the raw definition list down to what is worth paying for, preserving source variety:
