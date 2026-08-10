@@ -63,6 +63,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
         val model = modelFor(request.tier)
         var attempt = 0
         var lastError: Exception? = null
+        var downgradedThisCall = false
 
         // maxRetries counts retries, so the loop body runs maxRetries + 1 times. Dialect
         // adaptations (400s that tell us how to fix the body) do not consume an attempt.
@@ -135,6 +136,22 @@ class OpenAiCompatibleLlmClient : LlmClient {
                             "llm task={} model={} status={} attempt={}/{}",
                             request.task, model, response.status.value, attempt, request.maxRetries + 1
                         )
+
+                        // A gateway in front of the model often reports a rejected request body
+                        // as 5xx rather than passing the 400 through, which would otherwise hide
+                        // an unsupported response_format behind an apparently transient error.
+                        // Retrying the same body forever cannot fix that, so step the constraint
+                        // down once and try again before spending the remaining attempts.
+                        if (response.status.value >= 500 &&
+                            request.responseFormat is ResponseFormat.JsonSchema &&
+                            !downgradedThisCall &&
+                            AiCompat.downgradeStructuredMode(logger)
+                        ) {
+                            downgradedThisCall = true
+                            attempt--
+                            continue
+                        }
+
                         backoff(attempt)
                     }
                 }
