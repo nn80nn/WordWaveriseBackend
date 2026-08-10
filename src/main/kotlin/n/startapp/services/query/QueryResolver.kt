@@ -139,8 +139,12 @@ class QueryResolver(
         }
 
         // 4c. Spelling correction. This is what turns "recieve" into a result instead of an error.
-        val suggestions = oracle?.spellingSuggestions(normalized, 5).orEmpty()
-        val best = suggestions.firstOrNull { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
+        // Ranked by edit distance first: the oracle orders by frequency, which alone would
+        // prefer a common word over the one actually meant.
+        val suggestions = oracle?.spellingSuggestions(normalized, 8).orEmpty()
+        val best = suggestions
+            .filter { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
+            .minByOrNull { editDistance(normalized, it) }
         if (best != null) {
             return base(rawInput, normalized, "en", QueryKind.MISSPELLING, best).copy(
                 correctionApplied = true,
@@ -265,17 +269,38 @@ class QueryResolver(
         return coreVowels.toDouble() / letters.length >= 0.2
     }
 
+    /**
+     * Damerau-Levenshtein (optimal string alignment): a transposition costs 1, not 2.
+     *
+     * That single difference decides the most common English typo. Under plain Levenshtein
+     * "recieve" is 2 edits from "receive" but only 1 from "relieve", so the speller confidently
+     * corrects it to the wrong word. Counting the swapped "ie" as one edit puts both at 1, and
+     * the oracle's frequency ordering breaks the tie in favour of the word people actually mean.
+     */
     private fun editDistance(a: String, b: String): Int {
         if (a == b) return 0
-        val prev = IntArray(b.length + 1) { it }
-        val curr = IntArray(b.length + 1)
+        if (a.isEmpty()) return b.length
+        if (b.isEmpty()) return a.length
+
+        // Three rolling rows: i-2, i-1 and i. The i-2 row is what makes transpositions visible.
+        var twoBack = IntArray(b.length + 1)
+        var prev = IntArray(b.length + 1) { it }
+        var curr = IntArray(b.length + 1)
+
         for (i in 1..a.length) {
             curr[0] = i
             for (j in 1..b.length) {
                 val cost = if (a[i - 1] == b[j - 1]) 0 else 1
-                curr[j] = minOf(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+                var best = minOf(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) {
+                    best = minOf(best, twoBack[j - 2] + 1)
+                }
+                curr[j] = best
             }
-            prev.indices.forEach { prev[it] = curr[it] }
+            val rotated = twoBack
+            twoBack = prev
+            prev = curr
+            curr = rotated
         }
         return prev[b.length]
     }

@@ -54,11 +54,13 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
         }
     }
 
+    /** Ordered by how common the word is, so a caller breaking an edit-distance tie picks well. */
     override suspend fun spellingSuggestions(word: String, max: Int): List<String> = try {
         query(word.trim().lowercase(), max)
             .filter { !it.word.equals(word, ignoreCase = true) }
             // Suggesting one misspelling in place of another helps nobody.
             .filter { (frequencyOf(it) ?: Double.MAX_VALUE) >= MIN_FREQUENCY_PER_MILLION }
+            .sortedByDescending { frequencyOf(it) ?: 0.0 }
             .map { it.word }
     } catch (e: Exception) {
         logger.debug("DataMuse spelling suggestions failed for '$word': ${e.message}")

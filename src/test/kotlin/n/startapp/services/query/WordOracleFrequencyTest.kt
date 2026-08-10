@@ -59,6 +59,32 @@ class WordOracleFrequencyTest {
         assertEquals(0, llm.calls, "the speller must settle this without a model call")
     }
 
+    /**
+     * The transposition case, which plain Levenshtein gets confidently wrong: "recieve" is two
+     * substitutions from "receive" but only one from "relieve".
+     */
+    @Test
+    fun `a swapped letter pair outranks a same-distance substitution`() = runBlocking {
+        val resolver = QueryResolver(
+            oracle = FrequencyOracle(
+                mapOf("recieve" to 0.033083, "relieve" to 5.0, "receive" to 47.926155)
+            )
+        )
+
+        assertEquals("receive", resolver.resolve("recieve").lemma)
+    }
+
+    @Test
+    fun `the closest candidate wins over a merely more common one`() = runBlocking {
+        // "helo" is one insertion from "hello" and two edits from "helps"; frequency must not
+        // drag the answer to the further word.
+        val resolver = QueryResolver(
+            oracle = FrequencyOracle(mapOf("helo" to 0.01, "hello" to 30.0, "helps" to 90.0))
+        )
+
+        assertEquals("hello", resolver.resolve("helo").lemma)
+    }
+
     @Test
     fun `a genuinely rare word is not treated as a typo`() = runBlocking {
         val resolver = QueryResolver(
