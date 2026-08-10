@@ -117,11 +117,13 @@ class QueryResolverTest {
     }
 
     @Test
-    fun `a misspelling is corrected from the spelling oracle, without an llm call`() = runBlocking {
+    fun `a swapped letter pair is corrected locally, without an llm call`() = runBlocking {
         val llm = CountingLlm()
+        // The provider is deliberately unhelpful here: its own suggestion for "recieve" is
+        // "relieve", which is what shipped before transpositions were generated locally.
         val out = resolver(
-            known = setOf("receive"),
-            suggestions = mapOf("recieve" to listOf("receive", "relieve")),
+            known = setOf("receive", "relieve"),
+            suggestions = mapOf("recieve" to listOf("relieve")),
             llm = llm
         ).resolve("recieve")
 
@@ -129,8 +131,31 @@ class QueryResolverTest {
         assertEquals("receive", out.lemma)
         assertTrue(out.correctionApplied)
         assertEquals("recieve", out.correctedFrom)
-        assertEquals(listOf("relieve"), out.alternatives.map { it.form })
+        assertEquals("transposition", out.resolvedBy)
         assertEquals(0, llm.calls)
+    }
+
+    @Test
+    fun `a non-transposition typo falls through to the provider's suggestions`() = runBlocking {
+        val llm = CountingLlm()
+        val out = resolver(
+            known = setOf("necessary"),
+            suggestions = mapOf("neccessary" to listOf("necessary", "necessarily")),
+            llm = llm
+        ).resolve("neccessary")
+
+        assertEquals(QueryKind.MISSPELLING, out.kind)
+        assertEquals("necessary", out.lemma)
+        assertEquals("datamuse", out.resolvedBy)
+        assertEquals(listOf("necessarily"), out.alternatives.map { it.form })
+        assertEquals(0, llm.calls)
+    }
+
+    @Test
+    fun `a transposition that is not a real word is not proposed`() = runBlocking {
+        // "helol" swaps to "hello", but nothing here says "hello" exists, so no correction.
+        val out = resolver(known = emptySet()).resolve("helol")
+        assertFalse(out.correctionApplied)
     }
 
     @Test

@@ -138,9 +138,22 @@ class QueryResolver(
             }
         }
 
-        // 4c. Spelling correction. This is what turns "recieve" into a result instead of an error.
-        // Ranked by edit distance first: the oracle orders by frequency, which alone would
-        // prefer a common word over the one actually meant.
+        // 4c. Swapped adjacent letters, which the spelling provider cannot reach on its own.
+        // Checked before its suggestions because those confidently offer a same-distance
+        // substitution ("relieve") for what is really a transposition ("receive").
+        for (candidate in MorphologyHeuristics.transpositions(normalized)) {
+            val confirmed = knownForm?.invoke(candidate) != null || oracle?.exists(candidate) == true
+            if (confirmed) {
+                return base(rawInput, normalized, "en", QueryKind.MISSPELLING, candidate).copy(
+                    correctionApplied = true,
+                    correctedFrom = normalized,
+                    resolvedBy = "transposition"
+                )
+            }
+        }
+
+        // 4d. Spelling correction from the provider. Ranked by edit distance first: it orders by
+        // frequency, which alone would prefer a common word over the one actually meant.
         val suggestions = oracle?.spellingSuggestions(normalized, 8).orEmpty()
         val best = suggestions
             .filter { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
@@ -154,7 +167,7 @@ class QueryResolver(
             )
         }
 
-        // 4d. Latin typed in an English layout when Russian was meant. Last before the model,
+        // 4e. Latin typed in an English layout when Russian was meant. Last before the model,
         // because reinterpreting letters is a far bigger leap than fixing two of them.
         if (looksLikeWrongLayout(normalized)) {
             KeyboardLayout.latinToCyrillic(normalized)?.takeIf { looksLikeRussian(it) }?.let { cyrillic ->

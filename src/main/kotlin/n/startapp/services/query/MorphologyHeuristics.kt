@@ -67,6 +67,32 @@ object MorphologyHeuristics {
         return out.toList()
     }
 
+    /**
+     * Typo candidates the spelling provider cannot reach.
+     *
+     * DataMuse's `sp=` matches spelling *patterns*, so it never offers "receive" for "recieve" —
+     * it returns "relieve" instead, which is one substitution away. Swapped adjacent letters are
+     * the most common English typo and its most common instance is exactly "ie"/"ei", so these
+     * are generated locally and confirmed against a real word list.
+     *
+     * Bounded on purpose: only transpositions, so the candidate count is length-1 and each one
+     * is a plausible slip rather than an arbitrary edit.
+     */
+    fun transpositions(word: String): List<String> {
+        val w = word.trim().lowercase()
+        if (w.length < 3) return emptyList()
+        return (0 until w.length - 1)
+            .filter { w[it] != w[it + 1] }
+            .map { i ->
+                StringBuilder(w).apply {
+                    val tmp = this[i]
+                    this[i] = this[i + 1]
+                    this[i + 1] = tmp
+                }.toString()
+            }
+            .distinct()
+    }
+
     /** "runn" → "run": strips a consonant doubled before a suffix. */
     private fun undoubled(stem: String): String? {
         if (stem.length < 3) return null
