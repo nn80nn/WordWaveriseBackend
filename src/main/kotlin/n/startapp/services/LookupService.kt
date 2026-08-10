@@ -18,6 +18,7 @@ import n.startapp.models.lookup.LookupResponse
 import n.startapp.models.query.QueryKind
 import n.startapp.models.query.ResolvedQuery
 import n.startapp.repositories.LexicalEntryRepository
+import n.startapp.repositories.StoredEntry
 import n.startapp.services.dictionary.AggregatedWord
 import n.startapp.services.dictionary.DictionaryAggregationService
 import n.startapp.services.lexical.LexicalAnnotationService
@@ -78,11 +79,17 @@ class LookupService(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight = ConcurrentHashMap<String, Deferred<AnnotationOutcome>>()
 
-    /** Short-lived so a hot word skips the DB round-trip; the durable copy lives in Postgres. */
+    /**
+     * Short-lived so a hot word skips the DB round-trip; the durable copy lives in Postgres.
+     *
+     * Holds the raw aggregate alongside the article, not just the article: they are two halves
+     * of one answer, and caching only the entry made the sources view empty at the exact moment
+     * the article arrived.
+     */
     private val hot = Caffeine.newBuilder()
         .expireAfterWrite(30, TimeUnit.MINUTES)
         .maximumSize(2_000)
-        .build<String, LexicalEntry>()
+        .build<String, StoredEntry>()
 
     /**
      * Failed annotations are cached briefly and deliberately.
@@ -182,13 +189,14 @@ class LookupService(
             return LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = cached,
-                annotationStatus = AnnotationStatus.READY
+                entry = cached.entry,
+                annotationStatus = AnnotationStatus.READY,
+                raw = cached.raw
             )
         }
 
         repository.find(cacheKey)?.let { stored ->
-            hot.put(cacheKey, stored.entry)
+            hot.put(cacheKey, stored)
             return LookupResponse(
                 resolution = resolution,
                 notice = notice,
@@ -267,7 +275,10 @@ class LookupService(
                                 full.sourceDefinitions.map { it.definition }
                             )
                         )
-                        hot.put(cacheKey, result.entry)
+                        hot.put(
+                            cacheKey,
+                            StoredEntry(result.entry, full.response, sourceFingerprint = "")
+                        )
                     }
                     outcome
                 } finally {
@@ -357,7 +368,7 @@ class LookupService(
             raw = n.startapp.models.dictionary.WordDetailResponse(word = lemma, definitions = emptyList()),
             sourceFingerprint = LexicalEntryRepository.fingerprint(emptyList())
         )
-        hot.put(cacheKey, result.entry)
+        hot.put(cacheKey, StoredEntry(result.entry, null, sourceFingerprint = ""))
 
         return LookupResponse(
             resolution = resolution,
