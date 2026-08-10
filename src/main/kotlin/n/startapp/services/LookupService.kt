@@ -53,7 +53,11 @@ class LookupService(
      * unhealthy provider can otherwise keep a job alive for minutes — during which every
      * request for that word reports PENDING and the user waits on something that will not come.
      */
-    private val ANNOTATION_DEADLINE_MS = 90_000L
+    private val ANNOTATION_DEADLINE_MS = 150_000L
+
+    /** Failures the provider may recover from on its own — mainly rate limiting. */
+    private val TRANSIENT_REASONS = setOf("llm_call_failed", "llm_timeout")
+    private val TRANSIENT_RETRY_MS = 45_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight = ConcurrentHashMap<String, Deferred<AnnotationOutcome>>()
@@ -70,9 +74,27 @@ class LookupService(
      * They must not be persisted — the next request should retry the model — but without a
      * short-lived record every retry starts a fresh job, the grace period expires again, and the
      * client polls PENDING forever instead of ever seeing the degraded article it could render.
+     *
+     * Entries expire on their own schedule: a rate-limited call is worth retrying in under a
+     * minute, whereas a reply the validator rejected will be rejected again, so retrying it
+     * quickly just burns the token budget.
      */
     private val degraded = Caffeine.newBuilder()
-        .expireAfterWrite(10, TimeUnit.MINUTES)
+        .expireAfter(object : com.github.benmanes.caffeine.cache.Expiry<String, AnnotationOutcome> {
+            override fun expireAfterCreate(key: String, value: AnnotationOutcome, currentTime: Long): Long =
+                TimeUnit.MILLISECONDS.toNanos(
+                    if (value.reason in TRANSIENT_REASONS) TRANSIENT_RETRY_MS
+                    else TimeUnit.MINUTES.toMillis(10)
+                )
+
+            override fun expireAfterUpdate(
+                key: String, value: AnnotationOutcome, currentTime: Long, currentDuration: Long
+            ): Long = currentDuration
+
+            override fun expireAfterRead(
+                key: String, value: AnnotationOutcome, currentTime: Long, currentDuration: Long
+            ): Long = currentDuration
+        })
         .maximumSize(1_000)
         .build<String, AnnotationOutcome>()
 

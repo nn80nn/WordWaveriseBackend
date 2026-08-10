@@ -139,13 +139,18 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                     task = "annotate",
                     system = system,
                     user = user,
-                    maxTokens = 4000,
+                    // Providers reserve maxTokens against the per-minute token budget, so an
+                    // oversized ceiling gets the request rate-limited rather than truncated.
+                    // 2500 comfortably fits a rich multi-POS article.
+                    maxTokens = 2500,
                     temperature = 0.2,
                     responseFormat = ResponseFormat.JsonSchema(
                         name = LEXICAL_ENTRY_SCHEMA_NAME,
                         schema = LEXICAL_ENTRY_JSON_SCHEMA
                     ),
-                    maxRetries = 1
+                    // Annotation runs in the background, so it can afford to wait out a
+                    // rate limit rather than degrade the article.
+                    maxRetries = 3
                 )
             )
         } catch (e: Exception) {

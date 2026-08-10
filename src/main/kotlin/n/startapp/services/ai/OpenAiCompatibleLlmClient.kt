@@ -117,8 +117,19 @@ class OpenAiCompatibleLlmClient : LlmClient {
                     response.status.value == 401 || response.status.value == 403 ->
                         throw LlmException("AI provider rejected the credentials (${response.status.value})")
 
+                    response.status.value == 429 -> {
+                        // Rate limits are per minute, so exponential backoff from 500ms just
+                        // burns the remaining attempts. Providers say how long to wait — use it.
+                        val waitMs = retryAfterMs(response)
+                        lastError = LlmException("AI provider returned 429 (rate limited)")
+                        logger.warn(
+                            "llm task={} model={} rate limited, waiting {}ms, attempt={}/{}",
+                            request.task, model, waitMs, attempt, request.maxRetries + 1
+                        )
+                        if (attempt <= request.maxRetries) delay(waitMs)
+                    }
+
                     else -> {
-                        // 429 and 5xx are worth retrying.
                         lastError = LlmException("AI provider returned ${response.status.value}")
                         logger.warn(
                             "llm task={} model={} status={} attempt={}/{}",
@@ -150,6 +161,30 @@ class OpenAiCompatibleLlmClient : LlmClient {
     private suspend fun backoff(attempt: Int) {
         val base = 500L * (1 shl (attempt - 1).coerceAtMost(4))
         delay(base + Random.nextLong(0, 250))
+    }
+
+    /**
+     * How long the provider wants us to wait, from `Retry-After` (seconds) or the
+     * `x-ratelimit-reset-*` headers OpenAI-compatible providers send with durations like
+     * "7.66s" or "2m59s". Capped so one throttled call cannot monopolise an annotation slot.
+     */
+    private fun retryAfterMs(response: io.ktor.client.statement.HttpResponse): Long {
+        val cap = 30_000L
+        val header = response.headers["Retry-After"]
+            ?: response.headers["retry-after"]
+            ?: response.headers["x-ratelimit-reset-tokens"]
+            ?: response.headers["x-ratelimit-reset-requests"]
+            ?: return 5_000L
+
+        header.trim().toDoubleOrNull()?.let { return (it * 1000).toLong().coerceIn(1_000L, cap) }
+
+        val duration = Regex("(?:(\\d+)m)?([\\d.]+)s").find(header.trim())
+        if (duration != null) {
+            val minutes = duration.groupValues[1].toLongOrNull() ?: 0L
+            val seconds = duration.groupValues[2].toDoubleOrNull() ?: 0.0
+            return ((minutes * 60 + seconds) * 1000).toLong().coerceIn(1_000L, cap)
+        }
+        return 5_000L
     }
 
     /**
