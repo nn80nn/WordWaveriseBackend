@@ -65,7 +65,7 @@ class ContextAnalysisService(
     private val json = Json { isLenient = true; ignoreUnknownKeys = true }
 
     companion object {
-        const val PROMPT_VERSION_CONTEXT = 1
+        const val PROMPT_VERSION_CONTEXT = 2
 
         /** Word overlap above this counts as the same sense. */
         private const val SENSE_MATCH_THRESHOLD = 0.35
@@ -75,7 +75,10 @@ class ContextAnalysisService(
 
             Тебе дают предложение и одно выделенное в нём слово. Определи:
             - lemma: словарная форма выделенного слова
-            - pos: часть речи ИМЕННО в этом предложении
+            - pos: часть речи ИМЕННО в этом предложении. Ровно одно слово из списка:
+              noun, verb, adjective, adverb, pronoun, preposition, conjunction,
+              determiner, numeral, interjection, phrase, idiom, phrasal verb.
+              Без уточнений про время, залог и форму — только сама часть речи.
             - senseGlossEn: краткое (до 12 слов) английское определение того значения,
               в котором слово употреблено ЗДЕСЬ
             - translationRu: перевод выделенного слова так, как его следует перевести
