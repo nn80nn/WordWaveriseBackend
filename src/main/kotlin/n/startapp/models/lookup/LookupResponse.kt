@@ -1,9 +1,11 @@
 package n.startapp.models.lookup
 
 import kotlinx.serialization.Serializable
+import n.startapp.models.dictionary.RuEnCandidates
 import n.startapp.models.dictionary.WordDetailResponse
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.query.ResolvedQuery
+import n.startapp.services.context.TokenizedText
 
 @Serializable
 enum class AnnotationStatus {
@@ -40,5 +42,12 @@ data class LookupResponse(
     /** Set with [AnnotationStatus.PENDING]: how long to wait before re-issuing the same request. */
     val retryAfterMs: Int? = null,
     /** Always present when the dictionary pipeline ran — powers the sources view. */
-    val raw: WordDetailResponse? = null
+    val raw: WordDetailResponse? = null,
+    /** Present when the query was Russian: English options with the context to choose between them. */
+    val ruEn: RuEnCandidates? = null,
+    /**
+     * Present when the query was a sentence: its words, ready to be rendered tappable.
+     * Shipped inline so tapping a word costs no extra round trip.
+     */
+    val tokenized: TokenizedText? = null
 )

@@ -9,9 +9,11 @@ import n.startapp.services.SuggestService
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.OpenAiCompatibleLlmClient
 import n.startapp.services.dictionary.DictionaryAggregationService
+import n.startapp.services.context.ContextAnalysisService
 import n.startapp.services.lexical.LexicalAnnotationService
 import n.startapp.services.query.DataMuseWordOracle
 import n.startapp.services.query.QueryResolver
+import n.startapp.services.query.RuEnTranslationService
 import org.slf4j.LoggerFactory
 
 /**
@@ -30,9 +32,11 @@ class ServiceRegistry {
 
     val lexicalEntryRepository = LexicalEntryRepository()
 
+    val ruEnTranslationService = RuEnTranslationService(llmClient, llmCacheRepository)
+
     val aiService = AiService(llmClient)
     val dictionaryService = DictionaryService(aiService, lexicalEntryRepository)
-    val suggestService = SuggestService()
+    val suggestService = SuggestService(ruEnTranslationService)
 
     private val aggregationService = DictionaryAggregationService()
     private val annotationService = LexicalAnnotationService(llmClient)
@@ -46,11 +50,14 @@ class ServiceRegistry {
         llmCache = llmCacheRepository
     )
 
+    val contextAnalysisService = ContextAnalysisService(llmClient, lexicalEntryRepository, llmCacheRepository)
+
     val lookupService = LookupService(
         aggregationService = aggregationService,
         annotationService = annotationService,
         repository = lexicalEntryRepository,
-        queryResolver = queryResolver
+        queryResolver = queryResolver,
+        ruEnTranslationService = ruEnTranslationService
     )
 
     fun close() {

@@ -23,7 +23,10 @@ import org.slf4j.LoggerFactory
  *  - English input   → DataMuse spelling suggestions (sp=)
  *  - Russian input   → MyMemory translation + DataMuse ml= for each candidate (multiple results)
  */
-class SuggestService {
+class SuggestService(
+    /** When present, Russian input is answered with explained options instead of bare words. */
+    private val ruEnTranslationService: n.startapp.services.query.RuEnTranslationService? = null
+) {
     private val logger = LoggerFactory.getLogger(SuggestService::class.java)
 
     private val httpClient = HttpClient(CIO) {
@@ -44,9 +47,19 @@ class SuggestService {
     suspend fun getSuggestions(query: String, prefix: Boolean = false): SuggestResponse {
         val trimmed = query.trim()
         return if (trimmed.any { it in '\u0400'..'\u04FF' }) {
-            // Russian input — translate and expand with related words
-            val suggestions = translateRuToEnMultiple(trimmed)
-            SuggestResponse(query = trimmed, lang = "ru", suggestions = suggestions)
+            // Russian input. The rich shape is authoritative; the string list is derived from it
+            // so clients built against the old contract keep working and get better strings.
+            val explained = ruEnTranslationService?.translate(trimmed)
+            if (explained != null && explained.candidates.isNotEmpty() && !explained.degraded) {
+                SuggestResponse(
+                    query = trimmed,
+                    lang = "ru",
+                    suggestions = explained.candidates.map { it.en },
+                    candidates = explained.candidates
+                )
+            } else {
+                SuggestResponse(query = trimmed, lang = "ru", suggestions = translateRuToEnMultiple(trimmed))
+            }
         } else if (prefix) {
             // English prefix — autocomplete
             val suggestions = fetchPrefixSuggestions(trimmed)
@@ -59,9 +72,11 @@ class SuggestService {
     }
 
     /**
-     * Translates Russian query via MyMemory, splits multiple candidates,
-     * then expands each via DataMuse ml= (means-like) in parallel.
-     * Returns up to 8 deduplicated English word suggestions.
+     * Degraded Russian → English path, used only when the model is unavailable.
+     *
+     * Machine translation only. The DataMuse "means like" expansion this used to apply is gone:
+     * it took semantic neighbours of an already-lossy translation, which is what produced the
+     * pile of unexplained near-synonyms rather than a set of real options.
      */
     private suspend fun translateRuToEnMultiple(text: String): List<String> {
         // Step 1: get translation from MyMemory
@@ -75,28 +90,11 @@ class SuggestService {
             .distinct()
             .take(4)
 
-        if (primaryCandidates.isEmpty()) return emptyList()
-
-        // Step 3: for each candidate, fetch DataMuse "means like" to expand synonyms
-        val expanded = coroutineScope {
-            primaryCandidates.map { candidate ->
-                async {
-                    try {
-                        fetchMeansLike(candidate).take(3)
-                    } catch (e: Exception) {
-                        emptyList()
-                    }
-                }
-            }.map { it.await() }
-        }
-
-        // Step 4: merge — primary candidates first, then expansions, dedup
-        val result = (primaryCandidates + expanded.flatten())
-            .distinct()
+        val result = primaryCandidates
             .filter { it.isNotBlank() && !it.equals(text, ignoreCase = true) }
-            .take(8)
+            .take(6)
 
-        logger.debug("RU suggestions for '$text': $result")
+        logger.debug("RU suggestions for '$text' (degraded path): $result")
         return result
     }
 

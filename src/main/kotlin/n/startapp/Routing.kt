@@ -20,6 +20,7 @@ import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
 import n.startapp.routes.flashcardRoutes
+import n.startapp.routes.contextRoutes
 import n.startapp.routes.lookupRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.routes.testingRoutes
@@ -104,7 +105,10 @@ fun Application.configureRouting(services: ServiceRegistry) {
         }
 
         // v2 lookup: LLM-annotated article, with the raw aggregate alongside it
-        lookupRoutes(services.lookupService)
+        lookupRoutes(services.lookupService, services.ruEnTranslationService)
+
+        // Word-in-sentence analysis
+        contextRoutes(services.contextAnalysisService)
 
         // Cache management endpoints
         route("/api/cache") {

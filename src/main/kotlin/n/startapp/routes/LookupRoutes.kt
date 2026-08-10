@@ -7,18 +7,31 @@ import io.ktor.server.routing.*
 import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
 import n.startapp.services.LookupService
+import n.startapp.services.query.RuEnTranslationService
 import n.startapp.utils.EnvConfig
 
 /**
  * v2 lookup. Separate from `/api/words/details` because [n.startapp.models.lookup.LookupResponse]
  * is a genuinely different shape — the legacy endpoints keep their contract byte for byte.
  */
-fun Route.lookupRoutes(lookupService: LookupService) {
+fun Route.lookupRoutes(
+    lookupService: LookupService,
+    ruEnTranslationService: RuEnTranslationService
+) {
     route("/api/v2/words") {
         get("/lookup") {
             val query = call.request.queryParameters["query"]
                 ?: throw BadRequestException("Query parameter 'query' is required")
             call.respond(ApiResponse.success(lookupService.lookup(query)))
+        }
+    }
+
+    route("/api/v2/translate") {
+        // GET so the result is cacheable and linkable; the query is always short.
+        get("/ru-en") {
+            val query = call.request.queryParameters["query"]
+                ?: throw BadRequestException("Query parameter 'query' is required")
+            call.respond(ApiResponse.success(ruEnTranslationService.translate(query)))
         }
     }
 

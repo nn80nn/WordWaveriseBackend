@@ -42,7 +42,8 @@ class LookupService(
     private val aggregationService: DictionaryAggregationService,
     private val annotationService: LexicalAnnotationService,
     private val repository: LexicalEntryRepository,
-    private val queryResolver: QueryResolver
+    private val queryResolver: QueryResolver,
+    private val ruEnTranslationService: n.startapp.services.query.RuEnTranslationService? = null
 ) {
     private val logger = LoggerFactory.getLogger(LookupService::class.java)
 
@@ -121,13 +122,25 @@ class LookupService(
             )
         }
 
-        // Russian input and free text are handled by pipelines that do not exist yet; until then
-        // they resolve to no article rather than being sent to the dictionary as a headword.
-        if (resolution.language == "ru" || resolution.kind == QueryKind.SENTENCE) {
+        // Russian never goes to the dictionary as a headword — it goes to reverse translation,
+        // which answers with English options the user can choose between.
+        if (resolution.language == "ru") {
             return LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                annotationStatus = AnnotationStatus.UNAVAILABLE
+                annotationStatus = AnnotationStatus.UNAVAILABLE,
+                ruEn = ruEnTranslationService?.translate(lemma)
+            )
+        }
+
+        // A sentence has no headword. Return its words instead, so the client can make them
+        // tappable and the user can ask about the one they actually stumbled on.
+        if (resolution.kind == QueryKind.SENTENCE) {
+            return LookupResponse(
+                resolution = resolution,
+                notice = notice,
+                annotationStatus = AnnotationStatus.UNAVAILABLE,
+                tokenized = n.startapp.services.context.Tokenizer.tokenize(resolution.raw.trim())
             )
         }
 
