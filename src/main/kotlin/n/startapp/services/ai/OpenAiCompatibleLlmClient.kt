@@ -49,10 +49,22 @@ class OpenAiCompatibleLlmClient : LlmClient {
     /** Optional fields that can be dropped when a gateway hides the real rejection. */
     private val MAX_RELAXATIONS = 2
 
-    private val baseUrl: String
+    /**
+     * The chat-completions URL.
+     *
+     * AI_DOMEN is written either as a bare host or with the API prefix already on it, and both
+     * are natural things to paste from a provider's docs. Appending unconditionally produced
+     * `/v1/v1/chat/completions`, which gateways answer with a bare 502 or 404 and no explanation,
+     * so a trailing `/v1` is stripped before the path is added.
+     */
+    val endpoint: String
         get() {
-            val raw = EnvConfig.aiDomen.trimEnd('/')
-            return if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
+            var raw = EnvConfig.aiDomen.trim().trimEnd('/')
+            if (!raw.startsWith("http://") && !raw.startsWith("https://")) raw = "https://$raw"
+            if (raw.endsWith("/v1")) raw = raw.removeSuffix("/v1")
+            if (raw.endsWith("/chat/completions")) raw = raw.removeSuffix("/chat/completions").trimEnd('/')
+            if (raw.endsWith("/v1")) raw = raw.removeSuffix("/v1")
+            return "$raw/v1/chat/completions"
         }
 
     private fun modelFor(tier: LlmModelTier) =
@@ -74,7 +86,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
             attempt++
             val started = System.currentTimeMillis()
             try {
-                val response = httpClient.post("$baseUrl/v1/chat/completions") {
+                val response = httpClient.post(endpoint) {
                     contentType(ContentType.Application.Json)
                     header("Authorization", "Bearer ${EnvConfig.aiApiKey}")
                     setBody(buildBody(request, model))

@@ -43,7 +43,9 @@ class LookupService(
     private val annotationService: LexicalAnnotationService,
     private val repository: LexicalEntryRepository,
     private val queryResolver: QueryResolver,
-    private val ruEnTranslationService: n.startapp.services.query.RuEnTranslationService? = null
+    private val ruEnTranslationService: n.startapp.services.query.RuEnTranslationService? = null,
+    /** Resolved chat-completions URL, reported by diagnose so a misconfigured base URL is visible. */
+    private val llmEndpoint: String = "?"
 ) {
     private val logger = LoggerFactory.getLogger(LookupService::class.java)
 
@@ -291,6 +293,7 @@ class LookupService(
         return mapOf(
             "lemma" to lemma,
             "model" to EnvConfig.aiModel,
+            "endpoint" to llmEndpoint,
             "structuredMode" to n.startapp.services.ai.AiCompat.structuredMode.name,
             "tokenParam" to n.startapp.services.ai.AiCompat.tokenParam,
             "sourceFragments" to aggregate.sourceDefinitions.size.toString(),

@@ -57,7 +57,8 @@ class ServiceRegistry {
         annotationService = annotationService,
         repository = lexicalEntryRepository,
         queryResolver = queryResolver,
-        ruEnTranslationService = ruEnTranslationService
+        ruEnTranslationService = ruEnTranslationService,
+        llmEndpoint = (llmClient as? OpenAiCompatibleLlmClient)?.endpoint ?: "?"
     )
 
     fun close() {
