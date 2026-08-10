@@ -54,6 +54,23 @@ object AiCompat {
         return true
     }
 
+    /**
+     * Stops sending `temperature` at all.
+     *
+     * Reasoning models reject any value other than the default — Claude with extended thinking
+     * and gpt-5.x both do — and a gateway usually reports that as a server error rather than
+     * passing the upstream 400 through, so it cannot be recognised from the response body.
+     *
+     * @return true when the field was being sent and now is not.
+     */
+    fun disableTemperature(logger: Logger): Boolean {
+        if (!supportsTemperatureRef.getAndSet(false)) return false
+        logger.warn(
+            "AI provider rejected requests carrying temperature; omitting it for the rest of this process. Set AI_SUPPORTS_TEMPERATURE=false to avoid the extra round-trip."
+        )
+        return true
+    }
+
     fun effectiveMaxTokens(requested: Int): Int =
         if (tokenParam == "max_completion_tokens") maxOf(requested, REASONING_BUDGET_FLOOR)
         else requested

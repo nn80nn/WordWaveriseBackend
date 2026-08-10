@@ -46,6 +46,9 @@ class OpenAiCompatibleLlmClient : LlmClient {
         expectSuccess = false
     }
 
+    /** Optional fields that can be dropped when a gateway hides the real rejection. */
+    private val MAX_RELAXATIONS = 2
+
     private val baseUrl: String
         get() {
             val raw = EnvConfig.aiDomen.trimEnd('/')
@@ -63,7 +66,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
         val model = modelFor(request.tier)
         var attempt = 0
         var lastError: Exception? = null
-        var downgradedThisCall = false
+        var relaxations = 0
 
         // maxRetries counts retries, so the loop body runs maxRetries + 1 times. Dialect
         // adaptations (400s that tell us how to fix the body) do not consume an attempt.
@@ -138,16 +141,12 @@ class OpenAiCompatibleLlmClient : LlmClient {
                         )
 
                         // A gateway in front of the model often reports a rejected request body
-                        // as 5xx rather than passing the 400 through, which would otherwise hide
-                        // an unsupported response_format behind an apparently transient error.
-                        // Retrying the same body forever cannot fix that, so step the constraint
-                        // down once and try again before spending the remaining attempts.
-                        if (response.status.value >= 500 &&
-                            request.responseFormat is ResponseFormat.JsonSchema &&
-                            !downgradedThisCall &&
-                            AiCompat.downgradeStructuredMode(logger)
-                        ) {
-                            downgradedThisCall = true
+                        // as 5xx rather than passing the 400 through, so an unsupported field
+                        // looks like a transient outage and retrying the same body can never
+                        // succeed. Drop one optional field per failure and retry immediately;
+                        // each relaxation is process-wide, so the cost is paid once per deploy.
+                        if (response.status.value >= 500 && relaxations < MAX_RELAXATIONS && relax(request)) {
+                            relaxations++
                             attempt--
                             continue
                         }
@@ -172,6 +171,26 @@ class OpenAiCompatibleLlmClient : LlmClient {
             "AI request '${request.task}' failed after $attempt attempt(s): ${lastError?.message}",
             lastError
         )
+    }
+
+    /**
+     * Drops the next optional request field, most specialised first.
+     *
+     * Ordered by how likely the field is to be the culprit and how little is lost by dropping it:
+     * a schema constraint is replaced by plain JSON (the validator still checks the result), and
+     * only then is temperature given up, which merely makes replies less deterministic.
+     *
+     * @return true when something changed and the request is worth re-sending.
+     */
+    private fun relax(request: LlmRequest): Boolean {
+        if (request.responseFormat !is ResponseFormat.Text &&
+            AiCompat.structuredMode != AiCompat.StructuredMode.NONE &&
+            AiCompat.downgradeStructuredMode(logger)
+        ) return true
+
+        if (request.temperature != null && AiCompat.disableTemperature(logger)) return true
+
+        return false
     }
 
     /** Exponential backoff with jitter; skipped after the final attempt by the loop condition. */
