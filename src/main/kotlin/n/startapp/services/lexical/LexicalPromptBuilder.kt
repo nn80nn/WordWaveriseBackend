@@ -10,7 +10,7 @@ import n.startapp.models.lexical.SourceRef
 object LexicalPromptBuilder {
 
     /** Bump on any prompt change. Part of the persistent cache key. */
-    const val PROMPT_VERSION = 2
+    const val PROMPT_VERSION = 3
 
     /**
      * The output contract, spelled out in the prompt as well as in `response_format`.
@@ -47,7 +47,7 @@ object LexicalPromptBuilder {
                   "register": "neutral" | "formal" | "informal" | "slang" | "vulgar" | "dated" | "literary" | "technical",
                   "cefr": "A1" | "A2" | "B1" | "B2" | "C1" | "C2" | null,
                   "domain": "строка или null",
-                  "examples": [{ "en": "предложение", "ru": "перевод", "sourceRef": число или null }],
+                  "examples": [{ "en": "предложение", "ru": "перевод", "sourceRef": число или null }],  // 1-2 штуки
                   "collocations": [{ "pattern": "строка", "ru": "строка или null" }],
                   "synonyms": ["строка", ...],
                   "antonyms": ["строка", ...],
@@ -61,7 +61,9 @@ object LexicalPromptBuilder {
         }
 
         Обязательны и никогда не пустые: definitionEn, definitionRu, translationsRu (минимум 1),
-        examples (минимум 1, с переводом). Значение без русского перевода будет отброшено.
+        examples (1–2 штуки, с переводом). Значение без русского перевода будет отброшено.
+
+        Пиши компактно: два примера на значение достаточно, третий не нужен.
     """.trimIndent()
 
     /** Guard rails for how much raw material is worth sending. */
@@ -147,13 +149,31 @@ object LexicalPromptBuilder {
             .mapIndexed { i, ref -> ref.copy(index = i + 1) }
     }
 
+    /**
+     * Every part of speech present in the fragments, in the order a dictionary lists them.
+     *
+     * Used to split one large article into independent per-POS calls: the sections do not depend
+     * on each other, so writing them concurrently turns the slowest term from a sum into a max.
+     */
+    fun partsOfSpeech(fragments: List<SourceRef>): List<String> {
+        val order = ALLOWED_POS.withIndex().associate { (i, pos) -> pos to i }
+        return fragments
+            .mapNotNull { it.partOfSpeech?.trim()?.lowercase()?.takeIf { pos -> pos in order } }
+            .distinct()
+            .sortedBy { order[it] ?: order.size }
+    }
+
     fun user(
         lemma: String,
         queryForm: String,
         kind: LexicalKind,
         fragments: List<SourceRef>,
         synonyms: List<String> = emptyList(),
-        antonyms: List<String> = emptyList()
+        antonyms: List<String> = emptyList(),
+        /** Restrict the reply to a single part of speech, so sections can be written in parallel. */
+        onlyPos: String? = null,
+        /** Only one of the parallel calls needs to answer the entry-level questions. */
+        includeEntryLevel: Boolean = true
     ): String = buildString {
         appendLine("ЗАГОЛОВОК: $lemma")
         if (queryForm.isNotBlank() && !queryForm.equals(lemma, ignoreCase = true)) {
@@ -189,6 +209,16 @@ object LexicalPromptBuilder {
         }
         if (antonyms.isNotEmpty()) {
             appendLine("АНТОНИМЫ ИЗ ИСТОЧНИКОВ: ${antonyms.take(20).joinToString(", ")}")
+        }
+
+        if (onlyPos != null) {
+            appendLine()
+            appendLine("ЗАДАНИЕ: опиши ТОЛЬКО часть речи \"$onlyPos\".")
+            appendLine("В posGroups верни РОВНО ОДНУ группу с pos = \"$onlyPos\".")
+            appendLine("Фрагменты других частей речи игнорируй — их описывает другой запрос.")
+            if (!includeEntryLevel) {
+                appendLine("etymology, usageNotes и frequencyBand верни пустыми (null / []).")
+            }
         }
     }.trimEnd()
 

@@ -1,5 +1,8 @@
 package n.startapp.services.lexical
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.Json
 import n.startapp.models.dictionary.DetailedDefinition
 import n.startapp.models.dictionary.WordDetailResponse
@@ -26,6 +29,9 @@ import org.slf4j.LoggerFactory
 class LexicalAnnotationService(private val llm: LlmClient) {
     private val logger = LoggerFactory.getLogger(LexicalAnnotationService::class.java)
     private val json = Json { isLenient = true; ignoreUnknownKeys = true }
+
+    /** Fan-out ceiling: enough for any real headword, low enough not to trip a rate limit. */
+    private val MAX_PARALLEL_POS = 4
 
     /** Builds the provenance list the model's `sourceRefs` point into. */
     fun buildSources(definitions: List<DetailedDefinition>): List<SourceRef> =
@@ -59,6 +65,11 @@ class LexicalAnnotationService(private val llm: LlmClient) {
     /**
      * Annotates [aggregate]. Never throws for model-side problems: a failure yields a
      * `degraded` entry built from the raw data so the user still gets the dictionary content.
+     *
+     * Time here is dominated by how much the model has to write, and the parts of speech are
+     * independent of one another — so when there is more than one, each is written by its own
+     * concurrent call and the slowest term becomes a max instead of a sum. It also means a
+     * single failing section costs that section rather than the whole article.
      */
     suspend fun annotate(
         lemma: String,
@@ -66,8 +77,80 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         kind: LexicalKind,
         aggregate: AggregatedWord
     ): AnnotationResult {
-        val raw = aggregate.response
         val sources = buildSources(aggregate.sourceDefinitions)
+        val partsOfSpeech = LexicalPromptBuilder.partsOfSpeech(sources)
+
+        return if (partsOfSpeech.size > 1) {
+            annotateByPartOfSpeech(lemma, queryForm, kind, aggregate, sources, partsOfSpeech)
+        } else {
+            annotateWhole(lemma, queryForm, kind, aggregate, sources, onlyPos = null)
+        }
+    }
+
+    /** One section per part of speech, written concurrently and stitched back together. */
+    private suspend fun annotateByPartOfSpeech(
+        lemma: String,
+        queryForm: String,
+        kind: LexicalKind,
+        aggregate: AggregatedWord,
+        sources: List<SourceRef>,
+        partsOfSpeech: List<String>
+    ): AnnotationResult = coroutineScope {
+        // Capped so a word with many parts of speech cannot fan out into a rate limit.
+        val targets = partsOfSpeech.take(MAX_PARALLEL_POS)
+
+        val results = targets.mapIndexed { index, pos ->
+            async {
+                annotateWhole(
+                    lemma, queryForm, kind, aggregate, sources,
+                    onlyPos = pos,
+                    // Etymology and usage notes belong to the word, not to a section: asking
+                    // every call for them would duplicate the answer and the tokens.
+                    includeEntryLevel = index == 0
+                )
+            }
+        }.awaitAll()
+
+        val usable = results.filter { !it.entry.degraded && it.entry.posGroups.isNotEmpty() }
+        if (usable.isEmpty()) {
+            logger.error("All {} per-POS annotations failed for '{}'", targets.size, lemma)
+            return@coroutineScope results.firstOrNull()
+                ?: AnnotationResult(
+                    entry = LexicalEntryFallback.fromRaw(aggregate.response, lemma, queryForm, kind, sources),
+                    reason = "validation_failed",
+                    detail = "no part of speech produced an article"
+                )
+        }
+
+        if (usable.size < targets.size) {
+            logger.warn(
+                "Annotation for '{}': {} of {} parts of speech survived",
+                lemma, usable.size, targets.size
+            )
+        }
+
+        val base = usable.first().entry
+        AnnotationResult(
+            entry = base.copy(
+                posGroups = usable.flatMap { it.entry.posGroups },
+                // Whichever section answered them; the first is the one that was asked.
+                etymology = usable.firstNotNullOfOrNull { it.entry.etymology },
+                usageNotes = usable.firstOrNull { it.entry.usageNotes.isNotEmpty() }?.entry?.usageNotes.orEmpty(),
+                frequencyBand = usable.firstNotNullOfOrNull { it.entry.frequencyBand }
+            )
+        )
+    }
+
+    private suspend fun annotateWhole(
+        lemma: String,
+        queryForm: String,
+        kind: LexicalKind,
+        aggregate: AggregatedWord,
+        sources: List<SourceRef>,
+        onlyPos: String?,
+        includeEntryLevel: Boolean = true
+    ): AnnotationResult {
+        val raw = aggregate.response
         val grounded = sources.isNotEmpty()
 
         val system = LexicalPromptBuilder.system(grounded)
@@ -77,7 +160,9 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             kind = kind,
             fragments = sources,
             synonyms = raw.synonyms,
-            antonyms = raw.antonyms
+            antonyms = raw.antonyms,
+            onlyPos = onlyPos,
+            includeEntryLevel = includeEntryLevel
         )
 
         var user = baseUser
@@ -85,7 +170,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         var lastCode = "validation_failed"
 
         repeat(2) { attempt ->
-            when (val outcome = attemptAnnotation(system, user, sources, lemma, queryForm, kind, aggregate, grounded)) {
+            when (val outcome = attemptAnnotation(system, user, onlyPos, sources, lemma, queryForm, kind, aggregate, grounded)) {
                 is AttemptResult.Success -> return AnnotationResult(outcome.entry)
                 is AttemptResult.Retry -> {
                     logger.warn(
@@ -143,6 +228,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
     private suspend fun attemptAnnotation(
         system: String,
         user: String,
+        onlyPos: String?,
         sources: List<SourceRef>,
         lemma: String,
         queryForm: String,
@@ -156,11 +242,10 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                     task = "annotate",
                     system = system,
                     user = user,
-                    // A full multi-POS article with bilingual examples runs well past 2500
-                    // tokens — that ceiling truncated the JSON mid-string, and a truncated
-                    // reply can never parse. The client grants one larger budget on top of
-                    // this if the model still hits the ceiling.
-                    maxTokens = 4500,
+                    // Sized for a whole article; a single part-of-speech section needs far
+                    // less, and the client grants one larger budget if the ceiling is hit
+                    // anyway — a truncated JSON can never parse, so retrying it is pointless.
+                    maxTokens = if (onlyPos != null) 2500 else 4500,
                     temperature = 0.2,
                     responseFormat = ResponseFormat.JsonSchema(
                         name = LEXICAL_ENTRY_SCHEMA_NAME,

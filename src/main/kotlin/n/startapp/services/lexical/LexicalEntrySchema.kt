@@ -80,7 +80,7 @@ val LEXICAL_ENTRY_JSON_SCHEMA: String = """
                   "examples": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 3,
+                    "maxItems": 2,
                     "items": {
                       "type": "object",
                       "additionalProperties": false,
