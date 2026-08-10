@@ -135,6 +135,13 @@ class LookupService(
 
     private data class AnnotationOutcome(
         val entry: LexicalEntry,
+        /**
+         * The aggregate the article was actually built from — wider than the quick one the
+         * cold-path response carried, because the job runs the scrapers. Kept here so the
+         * response that finally reports READY ships the sources behind the article, rather
+         * than the stand-in the request happened to start with.
+         */
+        val raw: n.startapp.models.dictionary.WordDetailResponse? = null,
         val reason: String? = null,
         val detail: String? = null
     )
@@ -260,7 +267,7 @@ class LookupService(
                         detail = "annotation exceeded ${ANNOTATION_DEADLINE_MS}ms"
                     )
 
-                    val outcome = AnnotationOutcome(result.entry, result.reason, result.detail)
+                    val outcome = AnnotationOutcome(result.entry, full.response, result.reason, result.detail)
                     if (result.entry.degraded) {
                         logger.warn("Annotation degraded for '{}': {} — {}", lemma, result.reason, result.detail)
                         degraded.put(cacheKey, outcome)
@@ -303,14 +310,14 @@ class LookupService(
                 entry = outcome.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = outcome.reason,
-                raw = aggregate.response
+                raw = outcome.raw ?: aggregate.response
             )
             else -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
                 entry = outcome.entry,
                 annotationStatus = AnnotationStatus.READY,
-                raw = aggregate.response
+                raw = outcome.raw ?: aggregate.response
             )
         }
     }
