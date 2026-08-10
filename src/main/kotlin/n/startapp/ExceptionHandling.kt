@@ -23,14 +23,13 @@ fun Application.configureExceptionHandling() {
             )
         }
 
-        // Handle generic exceptions
+        // Handle generic exceptions.
+        // The cause goes to the log only — echoing it back leaks stack/driver detail to clients.
         exception<Throwable> { call, cause ->
-            logger.error("Unexpected error: ${cause.message}", cause)
+            logger.error("Unexpected error on ${call.request.local.uri}: ${cause.message}", cause)
             call.respond(
                 HttpStatusCode.InternalServerError,
-                ApiResponse.error<Unit>(
-                    message = "Internal server error: ${cause.message ?: "Unknown error"}"
-                )
+                ApiResponse.error<Unit>(message = "Внутренняя ошибка сервера")
             )
         }
 

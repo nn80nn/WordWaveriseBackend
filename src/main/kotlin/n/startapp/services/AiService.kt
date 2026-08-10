@@ -6,10 +6,17 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import n.startapp.models.ai.*
+import n.startapp.services.ai.AiCompat
 import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
 
@@ -27,10 +34,12 @@ class AiService {
             })
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 30000
+            // Reasoning models routinely take longer than the old 30s ceiling.
+            requestTimeoutMillis = EnvConfig.aiTimeoutMs
             connectTimeoutMillis = 10000
-            socketTimeoutMillis = 30000
+            socketTimeoutMillis = EnvConfig.aiTimeoutMs
         }
+        expectSuccess = false
     }
 
     private val aiDomen: String get() {
@@ -91,36 +100,6 @@ class AiService {
         return AiTextResponse(result = result)
     }
 
-    /**
-     * Returns 1-based indices of the best/most distinct definitions from rawDefs.
-     * Using indices (not rewritten text) preserves the original source attribution.
-     * Falls back to first 5 indices on failure.
-     */
-    suspend fun selectBestDefinitionIndices(word: String, rawDefs: List<String>): List<Int> {
-        if (rawDefs.size <= 5) return rawDefs.indices.map { it + 1 }
-        val defsText = rawDefs.take(10).mapIndexed { i, d -> "${i + 1}. $d" }.joinToString("\n")
-        val prompt = """
-            Word: "$word"
-            Numbered definitions from multiple dictionary sources:
-            $defsText
-
-            Select the 5 most distinct and useful definitions. Remove near-duplicates.
-            Return ONLY a JSON array of 1-based indices, e.g.: [1, 3, 5, 7, 9]
-            No extra text, no explanation.
-        """.trimIndent()
-        return try {
-            val raw = callAi(prompt, maxTokens = 60, temperature = 0.2)
-            val cleaned = raw.trim()
-                .removePrefix("```json").removePrefix("```")
-                .removeSuffix("```").trim()
-            val indices = lenientJson.decodeFromString<List<Int>>(cleaned)
-            indices.filter { it in 1..rawDefs.size }
-        } catch (e: Exception) {
-            logger.warn("selectBestDefinitionIndices failed for '$word': ${e.message}")
-            rawDefs.indices.take(5).map { it + 1 }   // fallback: keep first 5
-        }
-    }
-
     suspend fun generateExercise(word: String): AiExerciseResponse {
         val prompt = """
             Create a fill-in-the-blank exercise for the English word "$word".
@@ -152,21 +131,64 @@ class AiService {
             logger.error("AI service not configured: AI_DOMEN or AI_API missing")
             throw IllegalStateException("AI service not configured")
         }
-        val request = ChatRequest(
-            model = model,
-            messages = listOf(ChatMessage(role = "user", content = prompt)),
-            maxTokens = maxTokens,
-            temperature = temperature
-        )
-        val response = httpClient.post("$aiDomen/v1/chat/completions") {
-            contentType(ContentType.Application.Json)
-            header("Authorization", "Bearer $aiApiKey")
-            setBody(request)
+
+        // First attempt uses the configured dialect; a 400 that names the offending field
+        // flips the process-wide flags and we retry once. This keeps a provider swap from
+        // taking every AI feature down until someone edits the env.
+        repeat(2) { attempt ->
+            val started = System.currentTimeMillis()
+            val response = httpClient.post("$aiDomen/v1/chat/completions") {
+                contentType(ContentType.Application.Json)
+                header("Authorization", "Bearer $aiApiKey")
+                setBody(buildRequestBody(prompt, maxTokens, temperature))
+            }
+
+            if (response.status.value == 400 && attempt == 0) {
+                val body = runCatching { response.bodyAsText() }.getOrDefault("")
+                if (AiCompat.adaptTo(body, logger)) return@repeat   // flags changed → retry
+                throw IllegalStateException("AI provider rejected the request: $body")
+            }
+
+            val chatResponse = response.body<ChatResponse>()
+            val choice = chatResponse.choices.firstOrNull()
+            val content = choice?.message?.content?.trim().orEmpty()
+            val usage = chatResponse.usage
+
+            logger.info(
+                "AI call model={} in={} out={} ms={} finish={}",
+                model, usage?.promptTokens ?: 0, usage?.completionTokens ?: 0,
+                System.currentTimeMillis() - started, choice?.finishReason
+            )
+
+            if (content.isEmpty()) {
+                // Reasoning models spend the completion budget on hidden reasoning tokens;
+                // an empty body with finish_reason=length means the budget was too small.
+                throw IllegalStateException(
+                    "Empty AI response (finish_reason=${choice?.finishReason}, " +
+                        "completion_tokens=${usage?.completionTokens ?: 0})"
+                )
+            }
+            return content
         }
-        val chatResponse = response.body<ChatResponse>()
-        return chatResponse.choices.firstOrNull()?.message?.content?.trim()
-            ?: throw IllegalStateException("Empty AI response")
+        throw IllegalStateException("AI request failed after dialect adaptation")
     }
+
+    /**
+     * The chat-completions body is assembled dynamically: the token-limit field name and
+     * whether `temperature` is accepted both vary by provider and model.
+     */
+    private fun buildRequestBody(prompt: String, maxTokens: Int, temperature: Double): JsonObject =
+        buildJsonObject {
+            put("model", model)
+            putJsonArray("messages") {
+                addJsonObject {
+                    put("role", "user")
+                    put("content", prompt)
+                }
+            }
+            put(AiCompat.tokenParam, AiCompat.effectiveMaxTokens(maxTokens))
+            if (AiCompat.supportsTemperature) put("temperature", temperature)
+        }
 
     fun close() {
         httpClient.close()

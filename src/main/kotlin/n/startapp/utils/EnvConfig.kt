@@ -40,8 +40,18 @@ object EnvConfig {
         }
     }
 
+    /**
+     * A blank value counts as "not set" and falls through to [default].
+     *
+     * This matters for docker-compose: `- AI_MODEL=${AI_MODEL}` always defines the variable,
+     * and it lands in the container as an empty string whenever Dokploy has no value for it.
+     * Without this, an unset variable would beat its default and, for example, ship
+     * `"model": ""` to the AI provider.
+     */
     fun get(key: String, default: String = ""): String {
-        return envMap[key] ?: System.getenv(key) ?: default
+        val value = envMap[key]?.takeIf { it.isNotBlank() }
+            ?: System.getenv(key)?.takeIf { it.isNotBlank() }
+        return value ?: default
     }
 
     fun getInt(key: String, default: Int): Int {
@@ -64,7 +74,29 @@ object EnvConfig {
     // AI configuration
     val aiDomen: String get() = get("AI_DOMEN", "")
     val aiApiKey: String get() = get("AI_API", "")
+    /**
+     * Defaults describe the model production is known to run today. To move to a stronger model,
+     * set AI_MODEL in Dokploy — do not change this default without confirming the provider
+     * serves that exact name, since a wrong name 400s every AI call.
+     */
     val aiModel: String get() = get("AI_MODEL", "llama-3.3-70b-versatile")
+
+    /** Cheaper/faster model for auxiliary tasks (query resolution). Falls back to [aiModel]. */
+    val aiModelFast: String get() = get("AI_MODEL_FAST", "").ifBlank { aiModel }
+
+    /**
+     * Name of the token-limit field in the chat-completions body.
+     * gpt-5.x requires `max_completion_tokens`; older/OSS models want `max_tokens`.
+     * The default matches [aiModel]; a mismatch is auto-corrected at runtime on the first
+     * 400 — see [n.startapp.services.ai.AiCompat] — so switching AI_MODEL alone is safe.
+     */
+    val aiTokenParam: String get() = get("AI_TOKEN_PARAM", "max_tokens")
+
+    /** gpt-5.x rejects the field outright; llama and most OSS models accept it. */
+    val aiSupportsTemperature: Boolean get() = get("AI_SUPPORTS_TEMPERATURE", "true").equals("true", true)
+
+    val aiTimeoutMs: Long get() = get("AI_TIMEOUT_MS", "60000").toLongOrNull() ?: 60_000L
+    val aiMaxRetries: Int get() = getInt("AI_MAX_RETRIES", 2)
 
     // Google OAuth
     val googleClientId: String get() = get("GOOGLE_CLIENT_ID", "")

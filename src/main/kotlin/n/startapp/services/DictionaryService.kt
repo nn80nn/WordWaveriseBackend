@@ -13,7 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import n.startapp.exceptions.NotFoundException
+import n.startapp.exceptions.UpstreamTimeoutException
 import n.startapp.models.dictionary.*
 import n.startapp.services.cache.CacheService
 import n.startapp.services.dictionary.DictionaryAggregationService
@@ -108,7 +108,7 @@ class DictionaryService {
             aggregationService.aggregateWordData(normalizedWord, skipScrapers = true, isPhrase = isPhrase)
         } ?: run {
             logger.warn("Quick fetch timed out for '$word' after 5s")
-            throw NotFoundException("Word '$word' not found (timeout)")
+            throw UpstreamTimeoutException("Источники не ответили вовремя для «$word». Попробуйте ещё раз.")
         }
 
         val entriesWithTranslations = addEntryTranslations(normalizedWord, aggregatedData.entries)

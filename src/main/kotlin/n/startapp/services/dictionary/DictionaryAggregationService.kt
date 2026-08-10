@@ -21,6 +21,7 @@ import n.startapp.models.dictionary.WordEntry
 import n.startapp.models.scraper.ScrapeEnrichment
 import n.startapp.repositories.ScraperCacheRepository
 import n.startapp.services.scraper.ScraperService
+import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
 
 /**
@@ -50,13 +51,15 @@ class DictionaryAggregationService {
     }
 
     /** All API clients for single-word queries.
-     *  Wiktionary is first so it isn't pushed out by the take() limit after scrapers fill up. */
-    private val allApiClients: List<DictionaryApiClient> = listOf(
-        WiktionaryApiClient(httpClient),
-        FreeDictionaryApiClient(httpClient),
-        WordsApiClient(httpClient),
-        DataMuseApiClient(httpClient)
-    )
+     *  Wiktionary is first so it isn't pushed out by the take() limit after scrapers fill up.
+     *  WordsAPI needs a paid key; without it every lookup burned a coroutine and a log line
+     *  to return null, so it is only wired in when the key is actually present. */
+    private val allApiClients: List<DictionaryApiClient> = buildList {
+        add(WiktionaryApiClient(httpClient))
+        add(FreeDictionaryApiClient(httpClient))
+        if (EnvConfig.get("WORDS_API_KEY").isNotBlank()) add(WordsApiClient(httpClient))
+        add(DataMuseApiClient(httpClient))
+    }
 
     /** Phrase-safe API clients — only these support multi-word queries reliably */
     private val phraseApiClients: List<DictionaryApiClient> = listOf(
@@ -102,8 +105,14 @@ class DictionaryAggregationService {
 
         val validApiResults = apiResults.filterNotNull()
 
-        if (validApiResults.isEmpty() && scraperResults.isEmpty()) {
-            logger.warn("Word '$word' not found in any source")
+        // "Found" must mean "somebody had a definition". DataMuse answers 200 with synonyms for
+        // plenty of non-words, which used to make a garbage query look like a hit and return a
+        // 200 carrying zero definitions.
+        val hasRealDefinitions = validApiResults.any { it.definitions.isNotEmpty() } ||
+            scraperResults.any { it.senses.isNotEmpty() }
+
+        if (!hasRealDefinitions) {
+            logger.warn("Word '$word' not found in any source (no definition-bearing result)")
             throw NotFoundException("Word '$word' not found in dictionary")
         }
 
