@@ -20,6 +20,7 @@ import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
 import n.startapp.routes.flashcardRoutes
+import n.startapp.routes.lookupRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.routes.testingRoutes
 import n.startapp.services.AiService
@@ -101,6 +102,9 @@ fun Application.configureRouting(services: ServiceRegistry) {
                 call.respond(ApiResponse.success(result))
             }
         }
+
+        // v2 lookup: LLM-annotated article, with the raw aggregate alongside it
+        lookupRoutes(services.lookupService)
 
         // Cache management endpoints
         route("/api/cache") {

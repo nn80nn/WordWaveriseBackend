@@ -75,7 +75,15 @@ class DictionaryAggregationService {
      * @param isPhrase if true, restricts to phrase-capable sources and skips scrapers
      * @throws NotFoundException if word not found in any source
      */
-    suspend fun aggregateWordData(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): WordDetailResponse {
+    suspend fun aggregateWordData(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): WordDetailResponse =
+        aggregateDetailed(word, skipScrapers, isPhrase).response
+
+    /**
+     * Same fetch, but also returns the material the public response throws away:
+     * the un-truncated per-source definition list (the grounding input for LLM annotation)
+     * and the POS-tagged pronunciation map (homograph display).
+     */
+    suspend fun aggregateDetailed(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): AggregatedWord {
         val activeClients = if (isPhrase) phraseApiClients else allApiClients
         val actuallySkipScrapers = skipScrapers || isPhrase
         if (actuallySkipScrapers) {
@@ -139,7 +147,7 @@ class DictionaryAggregationService {
         word: String,
         apiResults: List<SourcedWordData>,
         scraperResults: List<ScrapeEnrichment>
-    ): WordDetailResponse {
+    ): AggregatedWord {
 
         // ── Pronunciations ────────────────────────────────────────────────
         // Collect from API clients (FreeDictionary provides UK/US entries)
@@ -184,9 +192,11 @@ class DictionaryAggregationService {
                 )
             }
         }
-        // Increased from 15→30 so all sources (especially Wiktionary) are represented.
-        // Per-source dedup already caps at 8, so max total ≈ Cambridge(8)+Oxford(3)+Wiktionary(8)+FreeDictionary(8) = 27
-        val allDefinitions = deduplicateDefinitions(scraperDefs + apiDefs).take(30)
+        // Two views of the same material. The wider one is the grounding input for LLM
+        // annotation, which benefits from seeing near-duplicates it can merge itself; the
+        // narrower one is what the legacy per-source tabs render.
+        val groundingDefinitions = deduplicateDefinitions(scraperDefs + apiDefs, perSourceLimit = 12).take(40)
+        val allDefinitions = deduplicateDefinitions(scraperDefs + apiDefs, perSourceLimit = 8).take(30)
 
         // ── Synonyms / antonyms ───────────────────────────────────────────
         val allSynonyms = apiResults.flatMap { it.synonyms }
@@ -202,17 +212,21 @@ class DictionaryAggregationService {
         // ── Entries (grouped by POS for homograph support) ────────────────
         val entries = buildEntries(allDefinitions, pronunciations, perPosPronunciations, allSynonyms, allAntonyms)
 
-        return WordDetailResponse(
-            word = word.trim(),
-            phonetic = phonetic,
-            audioUrl = audioUrl,
-            pronunciations = pronunciations,
-            translation = null, // added by DictionaryService
-            definitions = allDefinitions,
-            entries = entries,
-            synonyms = allSynonyms,
-            antonyms = allAntonyms,
-            examples = allExamples
+        return AggregatedWord(
+            response = WordDetailResponse(
+                word = word.trim(),
+                phonetic = phonetic,
+                audioUrl = audioUrl,
+                pronunciations = pronunciations,
+                translation = null, // added by DictionaryService
+                definitions = allDefinitions,
+                entries = entries,
+                synonyms = allSynonyms,
+                antonyms = allAntonyms,
+                examples = allExamples
+            ),
+            sourceDefinitions = groundingDefinitions,
+            perPosPronunciations = perPosPronunciations
         )
     }
 
@@ -297,7 +311,10 @@ class DictionaryAggregationService {
      * Definitions from different sources are always kept — they power per-source tabs.
      * Also applies a per-source limit of 8 to avoid flooding the All tab.
      */
-    private fun deduplicateDefinitions(defs: List<DetailedDefinition>): List<DetailedDefinition> {
+    private fun deduplicateDefinitions(
+        defs: List<DetailedDefinition>,
+        perSourceLimit: Int = 8
+    ): List<DetailedDefinition> {
         val seenPerSource = mutableMapOf<String, MutableSet<String>>()
         val countPerSource = mutableMapOf<String, Int>()
         return defs.filter { def ->
@@ -305,7 +322,7 @@ class DictionaryAggregationService {
             val key = def.definition.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().take(60)
             val seenKeys = seenPerSource.getOrPut(source) { mutableSetOf() }
             val count = countPerSource.getOrDefault(source, 0)
-            if (count >= 8) return@filter false
+            if (count >= perSourceLimit) return@filter false
             if (!seenKeys.add(key)) return@filter false
             countPerSource[source] = count + 1
             true
