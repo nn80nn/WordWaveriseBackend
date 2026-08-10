@@ -51,7 +51,14 @@ class LookupService(
 
     /** How long a request waits for a fresh annotation before falling back to PENDING. */
     private val ANNOTATION_GRACE_MS = 1_200L
-    private val RETRY_AFTER_MS = 2_500
+
+    /**
+     * How long the client should wait before asking again.
+     *
+     * An article takes one to three minutes, so a 2.5s hint invited a poll storm for something
+     * that could not possibly be ready yet.
+     */
+    private val RETRY_AFTER_MS = 5_000
 
     /**
      * Hard ceiling on one annotation, sized above the client's own retry budget so it catches a
@@ -106,6 +113,18 @@ class LookupService(
         })
         .maximumSize(1_000)
         .build<String, AnnotationOutcome>()
+
+    /**
+     * The quick aggregate served while annotation runs.
+     *
+     * Polling is the normal case now — an article takes minutes — and without this every poll
+     * re-ran four upstream API calls for data that had not changed. Short-lived because it is a
+     * stand-in, not the real answer.
+     */
+    private val quickAggregates = Caffeine.newBuilder()
+        .expireAfterWrite(5, TimeUnit.MINUTES)
+        .maximumSize(500)
+        .build<String, AggregatedWord>()
 
     private data class AnnotationOutcome(
         val entry: LexicalEntry,
@@ -183,7 +202,9 @@ class LookupService(
         // annotation overruns the grace period.
         val isPhrase = resolution.kind == QueryKind.PHRASE
         val aggregate = try {
-            aggregationService.aggregateDetailed(lemma, skipScrapers = true, isPhrase = isPhrase)
+            quickAggregates.getIfPresent(cacheKey)
+                ?: aggregationService.aggregateDetailed(lemma, skipScrapers = true, isPhrase = isPhrase)
+                    .also { quickAggregates.put(cacheKey, it) }
         } catch (e: NotFoundException) {
             // Idioms and newer slang are routinely missing from every source. A written-from-
             // scratch article, clearly labelled as such, beats "not found" for a phrase the user
