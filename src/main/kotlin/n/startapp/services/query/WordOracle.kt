@@ -31,11 +31,23 @@ interface WordOracle {
 class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
     private val logger = LoggerFactory.getLogger(DataMuseWordOracle::class.java)
 
+    /**
+     * Occurrences per million words, below which the string is corpus noise rather than a word.
+     *
+     * Common misspellings really are present in DataMuse's vocabulary — "recieve" comes back for
+     * `sp=recieve` — so a self-match proves nothing. Frequency separates them decisively:
+     * recieve 0.033 vs receive 47.9, neccessary 0.036 vs necessary 155.8. One per million keeps
+     * genuinely rare words while rejecting typos by two orders of magnitude.
+     */
+    private val MIN_FREQUENCY_PER_MILLION = 1.0
+
     override suspend fun exists(word: String): Boolean {
         val target = word.trim().lowercase()
         if (target.isBlank()) return false
         return try {
-            query(target, 1).any { it.equals(target, ignoreCase = true) }
+            val match = query(target, 1).firstOrNull { it.word.equals(target, ignoreCase = true) }
+                ?: return false
+            frequencyOf(match)?.let { it >= MIN_FREQUENCY_PER_MILLION } ?: true
         } catch (e: Exception) {
             logger.debug("DataMuse existence check failed for '$target': ${e.message}")
             false
@@ -43,20 +55,29 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
     }
 
     override suspend fun spellingSuggestions(word: String, max: Int): List<String> = try {
-        query(word.trim().lowercase(), max).filter { !it.equals(word, ignoreCase = true) }
+        query(word.trim().lowercase(), max)
+            .filter { !it.word.equals(word, ignoreCase = true) }
+            // Suggesting one misspelling in place of another helps nobody.
+            .filter { (frequencyOf(it) ?: Double.MAX_VALUE) >= MIN_FREQUENCY_PER_MILLION }
+            .map { it.word }
     } catch (e: Exception) {
         logger.debug("DataMuse spelling suggestions failed for '$word': ${e.message}")
         emptyList()
     }
 
-    private suspend fun query(word: String, max: Int): List<String> {
+    private suspend fun query(word: String, max: Int): List<DataMuseWord> {
         val response = httpClient.get("https://api.datamuse.com/words") {
             parameter("sp", word)
+            parameter("md", "f")   // attach frequency metadata
             parameter("max", max)
         }
         if (response.status != HttpStatusCode.OK) return emptyList()
-        return response.body<List<DataMuseWord>>().map { it.word }
+        return response.body<List<DataMuseWord>>()
     }
+
+    /** DataMuse reports frequency as a tag of the form "f:47.926155". */
+    private fun frequencyOf(word: DataMuseWord): Double? =
+        word.tags?.firstOrNull { it.startsWith("f:") }?.removePrefix("f:")?.toDoubleOrNull()
 
     companion object {
         fun defaultClient(): HttpClient = HttpClient(CIO) {

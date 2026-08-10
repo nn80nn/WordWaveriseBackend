@@ -114,6 +114,18 @@ class LookupService(
         val lemma = resolution.lemma
         val notice = noticeFor(resolution)
 
+        // A sentence has no headword. Return its words instead, so the client can make them
+        // tappable and the user can ask about the one they actually stumbled on. Checked before
+        // the empty-lemma guard precisely because a sentence always has a null lemma.
+        if (resolution.kind == QueryKind.SENTENCE) {
+            return LookupResponse(
+                resolution = resolution,
+                notice = notice,
+                annotationStatus = AnnotationStatus.UNAVAILABLE,
+                tokenized = n.startapp.services.context.Tokenizer.tokenize(resolution.raw.trim())
+            )
+        }
+
         if (lemma.isNullOrBlank()) {
             return LookupResponse(
                 resolution = resolution,
@@ -130,17 +142,6 @@ class LookupService(
                 notice = notice,
                 annotationStatus = AnnotationStatus.UNAVAILABLE,
                 ruEn = ruEnTranslationService?.translate(lemma)
-            )
-        }
-
-        // A sentence has no headword. Return its words instead, so the client can make them
-        // tappable and the user can ask about the one they actually stumbled on.
-        if (resolution.kind == QueryKind.SENTENCE) {
-            return LookupResponse(
-                resolution = resolution,
-                notice = notice,
-                annotationStatus = AnnotationStatus.UNAVAILABLE,
-                tokenized = n.startapp.services.context.Tokenizer.tokenize(resolution.raw.trim())
             )
         }
 
