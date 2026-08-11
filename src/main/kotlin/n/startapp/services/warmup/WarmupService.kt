@@ -173,6 +173,7 @@ class WarmupService(
             for (word in slice) {
                 if (!isActive) break
                 current.set(word)
+                val startedWordAt = System.currentTimeMillis()
                 // Whether this word actually cost the dictionaries anything. The pacing exists to
                 // protect them, so a word that never reached them must not be paced: a resumed
                 // run walks the entire already-built prefix before it reaches new work, and at
@@ -203,9 +204,18 @@ class WarmupService(
                 current.set(null)
 
                 if (isActive) {
-                    // Jittered so the traffic does not arrive on a metronome.
-                    if (reachedTheSources) delay(spacingMs + Random.nextLong(-spacingMs / 5, spacingMs / 5))
-                    else delay(SKIP_STEP_MS)
+                    if (reachedTheSources) {
+                        // Spacing is measured between words, not added to them: building an
+                        // article takes 20-30s, so sleeping a full interval on top of that would
+                        // deliver about three quarters of the requested rate and make the
+                        // setting mean something other than what it says. Jittered so the
+                        // traffic does not arrive on a metronome.
+                        val target = spacingMs + Random.nextLong(-spacingMs / 5, spacingMs / 5)
+                        val spent = System.currentTimeMillis() - startedWordAt
+                        delay((target - spent).coerceAtLeast(0))
+                    } else {
+                        delay(SKIP_STEP_MS)
+                    }
                 }
             }
             logger.info(
