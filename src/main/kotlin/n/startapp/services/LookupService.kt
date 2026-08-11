@@ -280,7 +280,8 @@ class LookupService(
                             raw = full.response,
                             sourceFingerprint = LexicalEntryRepository.fingerprint(
                                 full.sourceDefinitions.map { it.definition }
-                            )
+                            ),
+                            usage = result.usage
                         )
                         hot.put(
                             cacheKey,
@@ -373,7 +374,8 @@ class LookupService(
             cacheKey = cacheKey,
             entry = result.entry,
             raw = n.startapp.models.dictionary.WordDetailResponse(word = lemma, definitions = emptyList()),
-            sourceFingerprint = LexicalEntryRepository.fingerprint(emptyList())
+            sourceFingerprint = LexicalEntryRepository.fingerprint(emptyList()),
+            usage = result.usage
         )
         hot.put(cacheKey, StoredEntry(result.entry, null, sourceFingerprint = ""))
 
@@ -469,7 +471,8 @@ class LookupService(
             raw = aggregate.response,
             sourceFingerprint = LexicalEntryRepository.fingerprint(
                 aggregate.sourceDefinitions.map { it.definition }
-            )
+            ),
+            usage = result.usage
         )
         return WarmOutcome.WRITTEN
     }

@@ -14,6 +14,7 @@ import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.LlmJson
 import n.startapp.services.ai.LlmRequest
 import n.startapp.services.ai.LlmRoute
+import n.startapp.services.ai.LlmUsage
 import n.startapp.services.ai.ResponseFormat
 import n.startapp.services.dictionary.AggregatedWord
 import n.startapp.utils.EnvConfig
@@ -57,6 +58,12 @@ class LexicalAnnotationService(private val llm: LlmClient) {
      */
     data class AnnotationResult(
         val entry: LexicalEntry,
+        /**
+         * What producing this article cost. Recorded on the row so the corpus can be asked what
+         * it spent — the columns existed from the start and were written as zeros, because
+         * nothing carried the number this far.
+         */
+        val usage: LlmUsage = LlmUsage(),
         /** Stable machine-readable code: llm_call_failed | parse_failed | validation_failed. */
         val reason: String? = null,
         /** Human-readable specifics for logs and the admin diagnose endpoint. */
@@ -136,6 +143,13 @@ class LexicalAnnotationService(private val llm: LlmClient) {
 
         val base = usable.first().entry
         AnnotationResult(
+            // Tokens add up across sections, but the calls run concurrently, so the time the
+            // article actually took is the slowest of them rather than their sum.
+            usage = LlmUsage(
+                promptTokens = usable.sumOf { it.usage.promptTokens },
+                completionTokens = usable.sumOf { it.usage.completionTokens },
+                latencyMs = usable.maxOf { it.usage.latencyMs }
+            ),
             entry = base.copy(
                 posGroups = usable.flatMap { it.entry.posGroups },
                 // Whichever section answered them; the first is the one that was asked.
@@ -177,7 +191,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
 
         repeat(2) { attempt ->
             when (val outcome = attemptAnnotation(system, user, onlyPos, route, sources, lemma, queryForm, kind, aggregate, grounded)) {
-                is AttemptResult.Success -> return AnnotationResult(outcome.entry)
+                is AttemptResult.Success -> return AnnotationResult(outcome.entry, outcome.usage)
                 is AttemptResult.Retry -> {
                     logger.warn(
                         "Annotation attempt {} for '{}' rejected: {}",
@@ -227,7 +241,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
     }
 
     private sealed interface AttemptResult {
-        data class Success(val entry: LexicalEntry) : AttemptResult
+        data class Success(val entry: LexicalEntry, val usage: LlmUsage) : AttemptResult
         data class Retry(val issues: List<String>, val code: String) : AttemptResult
         data class Abort(val reason: String) : AttemptResult
     }
@@ -316,6 +330,6 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             model = EnvConfig.aiModel,
             generatedAt = System.currentTimeMillis()
         )
-        return AttemptResult.Success(entry)
+        return AttemptResult.Success(entry, result.usage)
     }
 }
