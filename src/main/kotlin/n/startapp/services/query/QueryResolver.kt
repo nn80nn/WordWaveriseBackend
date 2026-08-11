@@ -49,6 +49,9 @@ class QueryResolver(
     /** How much more common a candidate must be before it may override what the user typed. */
     private val CORRECTION_FREQUENCY_RATIO = 50.0
 
+    /** Occurrences per million above which a word is too common to be anyone's typo. */
+    private val COMMON_ENOUGH_TO_TRUST = 1.0
+
     companion object {
         const val PROMPT_VERSION_RESOLVE = 1
 
@@ -127,8 +130,21 @@ class QueryResolver(
             return base(rawInput, normalized, "en", kind, lemma).copy(resolvedBy = "cache")
         }
 
-        // 4a. A real word as typed.
-        if (oracle?.exists(normalized) == true) {
+        // 4a. A common word as typed. Rare ones deliberately carry on down the ladder.
+        //
+        // Frequency cannot tell a rare word from a misspelling, because the two populations
+        // overlap: "teh" (0.40 per million) is commoner than "intertwine" (0.17), "occured"
+        // (0.42) commoner than "serendipity" (0.29). No threshold separates them, so returning
+        // on mere existence has to be wrong in one direction or the other — either every typo
+        // becomes a headword or every rare word gets hijacked by its commoner neighbour.
+        //
+        // So only words too common to be typos stop here. Everything below the line is carried
+        // to the rungs that weigh it against the specific alternatives, and comes back as a word
+        // at 4f if none of them wins. Unknown frequency counts as trustworthy: an oracle that
+        // cannot measure is no grounds for second-guessing the user.
+        val existsAsTyped = oracle?.exists(normalized) == true
+        val typedFrequency = if (existsAsTyped) oracle?.frequency(normalized) else null
+        if (existsAsTyped && (typedFrequency == null || typedFrequency >= COMMON_ENOUGH_TO_TRUST)) {
             return base(rawInput, normalized, "en", QueryKind.WORD, normalized).copy(resolvedBy = "datamuse")
         }
 
@@ -146,7 +162,7 @@ class QueryResolver(
         // substitution ("relieve") for what is really a transposition ("receive").
         for (candidate in MorphologyHeuristics.transpositions(normalized)) {
             val confirmed = knownForm?.invoke(candidate) != null || oracle?.exists(candidate) == true
-            if (confirmed) {
+            if (confirmed && worthOverriding(normalized, typedFrequency, candidate)) {
                 return base(rawInput, normalized, "en", QueryKind.MISSPELLING, candidate).copy(
                     correctionApplied = true,
                     correctedFrom = normalized,
@@ -161,13 +177,20 @@ class QueryResolver(
         val best = suggestions
             .filter { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
             .minByOrNull { editDistance(normalized, it) }
-        if (best != null && worthOverriding(normalized, best)) {
+        if (best != null && worthOverriding(normalized, typedFrequency, best)) {
             return base(rawInput, normalized, "en", QueryKind.MISSPELLING, best).copy(
                 correctionApplied = true,
                 correctedFrom = normalized,
                 alternatives = suggestions.filter { it != best }.take(4).map { QueryAlternative(it) },
                 resolvedBy = "datamuse"
             )
+        }
+
+        // 4f. Rare, but real, and nothing beat it. Take the user at their word — and note that
+        // this is what keeps the whole B2/C1 band off the model: those words reach here by
+        // design, and an LLM call for each would be the cost of the rung above being honest.
+        if (existsAsTyped) {
+            return base(rawInput, normalized, "en", QueryKind.WORD, normalized).copy(resolvedBy = "datamuse")
         }
 
         // 4e. Latin typed in an English layout when Russian was meant. Last before the model,
@@ -201,15 +224,17 @@ class QueryResolver(
      *    0.036), while a rare word beside a common one is not (intertwined 1.96 vs intertwine
      *    0.17). Demanding a wide margin keeps the first and rejects the second.
      *
-     * Unknown frequency means the string is absent from the corpus entirely — that is garbage,
-     * so the correction stands.
+     * A null [typedFrequency] means the string is absent from the corpus entirely — that is
+     * garbage, so the correction stands.
      */
-    private suspend fun worthOverriding(typed: String, candidate: String): Boolean {
+    private suspend fun worthOverriding(
+        typed: String, typedFrequency: Double?, candidate: String
+    ): Boolean {
         if (MorphologyHeuristics.candidates(candidate).any { it.equals(typed, true) }) {
             logger.debug("Not correcting '$typed' to its own inflection '$candidate'")
             return false
         }
-        val typedFrequency = oracle?.frequency(typed) ?: return true
+        if (typedFrequency == null) return true
         val candidateFrequency = oracle?.frequency(candidate) ?: return true
         val wideMargin = candidateFrequency >= typedFrequency * CORRECTION_FREQUENCY_RATIO
         if (!wideMargin) {

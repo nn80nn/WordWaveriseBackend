@@ -45,11 +45,12 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
      * Common misspellings really are present in DataMuse's vocabulary — "recieve" comes back for
      * `sp=recieve` — so a self-match proves nothing, and frequency has to do the separating.
      *
-     * The floor sits low because this gate answers "does this word exist", and the vocabulary the
-     * app exists to teach lives far down the tail: intertwine 0.17, serendipity 0.29, meander
-     * 0.44, candour 0.46. A gate placed above those declares the target vocabulary nonexistent
-     * and hands it to the speller, which is precisely how "intertwine" came back as
-     * "intertwined". Typos still fall well below: recieve 0.033, neccessary 0.036, decieve 0.003.
+     * The floor only clears out corpus dust (decieve 0.003, definately 0.008), and deliberately
+     * does not try to separate typos from words — it cannot. Those populations overlap: "teh"
+     * (0.40) is commoner than "intertwine" (0.17), "occured" (0.42) than "serendipity" (0.29).
+     * Raising the floor to catch the typos would declare the app's own B2/C1 vocabulary
+     * nonexistent, which is exactly how "intertwine" reached users as "intertwined". Deciding
+     * between a rare word and a misspelling needs a comparison, and belongs to the caller.
      */
     private val MIN_FREQUENCY_EXISTS = 0.05
 

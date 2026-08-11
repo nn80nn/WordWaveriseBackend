@@ -180,6 +180,7 @@ class QueryResolverTest {
         // built for the past participle and read as a verb wearing "-ed". The provider really
         // does offer the inflection, and it really is one edit away — distance cannot catch this.
         val out = resolver(
+            known = setOf("intertwine", "intertwined", "intestine"),
             suggestions = mapOf("intertwine" to listOf("intertwined", "intestine")),
             frequencies = mapOf("intertwine" to 0.168, "intertwined" to 1.963)
         ).resolve("intertwine")
@@ -192,6 +193,7 @@ class QueryResolverTest {
     fun `a rare word is not corrected into a merely more common neighbour`() = runBlocking {
         // Real corrections are buried by their target; a rare word beside a common one is not.
         val out = resolver(
+            known = setOf("meander", "meaner"),
             suggestions = mapOf("meander" to listOf("meaner")),
             frequencies = mapOf("meander" to 0.444, "meaner" to 1.2)
         ).resolve("meander")

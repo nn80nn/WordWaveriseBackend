@@ -126,6 +126,25 @@ class WordOracleFrequencyTest {
         assertEquals(0, llm.calls)
     }
 
+    /**
+     * The other side of the same coin, and the reason existence alone cannot end the ladder:
+     * "teh" is *commoner* than "intertwine". Both are rare, only one is a word, and the only
+     * thing that tells them apart is what each sits next to — "the" buries "teh" by five orders
+     * of magnitude, while "intertwined" is barely above "intertwine".
+     */
+    @Test
+    fun `a rare string is still corrected when its neighbour dwarfs it`() = runBlocking {
+        val resolver = QueryResolver(
+            oracle = FrequencyOracle(mapOf("teh" to 0.404922, "the" to 56271.0))
+        )
+
+        val out = resolver.resolve("teh")
+
+        assertEquals(QueryKind.MISSPELLING, out.kind)
+        assertEquals("the", out.lemma)
+        assertTrue(out.correctionApplied)
+    }
+
     @Test
     fun `one misspelling is never offered in place of another`() = runBlocking {
         val resolver = QueryResolver(
