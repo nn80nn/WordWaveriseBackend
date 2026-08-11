@@ -9,6 +9,7 @@ import n.startapp.models.ApiResponse
 import n.startapp.services.LookupService
 import n.startapp.services.query.RuEnTranslationService
 import n.startapp.services.warmup.WarmupService
+import n.startapp.services.warmup.WarmupStartResponse
 import n.startapp.utils.EnvConfig
 
 /**
@@ -57,10 +58,10 @@ fun Route.lookupRoutes(
             val started = warmupService.start(limit)
             call.respond(
                 ApiResponse.success(
-                    mapOf(
-                        "started" to started,
-                        "message" to if (started) "warm-up running" else "already running",
-                        "status" to warmupService.status()
+                    WarmupStartResponse(
+                        started = started,
+                        message = if (started) "warm-up running" else "already running",
+                        status = warmupService.status()
                     )
                 )
             )

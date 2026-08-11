@@ -34,6 +34,20 @@ data class WarmupStatus(
 )
 
 /**
+ * Reply to a start request.
+ *
+ * A declared type rather than a map: `ApiResponse` is serialized by kotlinx, which cannot write a
+ * `Map<String, Any>` and fails at render time — after the job has already been launched. That
+ * combination reports a 500 for a run that is in fact happily running.
+ */
+@Serializable
+data class WarmupStartResponse(
+    val started: Boolean,
+    val message: String,
+    val status: WarmupStatus
+)
+
+/**
  * Builds the corpus ahead of demand, one word at a time.
  *
  * Two constraints shape this, and both point the same way — go slowly:
@@ -84,6 +98,13 @@ class WarmupService(
          */
         private const val MAX_FREQUENCY_PER_MILLION = 60.0
         private const val MIN_FREQUENCY_PER_MILLION = 0.3
+
+        /**
+         * Pause after a word that cost the dictionaries nothing. Not zero: skipping still asks
+         * the frequency oracle once per word, and a couple of thousand of those back to back is
+         * a burst worth spreading out.
+         */
+        private const val SKIP_STEP_MS = 200L
     }
 
     /** The band, deduplicated and in a stable order so a restart resumes where it left off. */
@@ -136,15 +157,24 @@ class WarmupService(
             for (word in slice) {
                 if (!isActive) break
                 current.set(word)
+                // Whether this word actually cost the dictionaries anything. The pacing exists to
+                // protect them, so a word that never reached them must not be paced: a resumed
+                // run walks the entire already-built prefix before it reaches new work, and at
+                // one word every two minutes that prefix alone is hours of doing nothing.
+                var reachedTheSources = true
                 try {
                     if (isTooCommonOrTooRare(word)) {
                         skipped.incrementAndGet()
+                        reachedTheSources = false
                     } else {
                         when (lookupService.warm(word)) {
                             LookupService.WarmOutcome.WRITTEN -> written.incrementAndGet()
-                            LookupService.WarmOutcome.ALREADY_PRESENT -> alreadyPresent.incrementAndGet()
                             LookupService.WarmOutcome.NOT_FOUND -> notFound.incrementAndGet()
                             LookupService.WarmOutcome.FAILED -> failed.incrementAndGet()
+                            LookupService.WarmOutcome.ALREADY_PRESENT -> {
+                                alreadyPresent.incrementAndGet()
+                                reachedTheSources = false
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -156,8 +186,11 @@ class WarmupService(
                 processed.incrementAndGet()
                 current.set(null)
 
-                // Jittered so the traffic does not arrive on a metronome.
-                if (isActive) delay(spacingMs + Random.nextLong(-spacingMs / 5, spacingMs / 5))
+                if (isActive) {
+                    // Jittered so the traffic does not arrive on a metronome.
+                    if (reachedTheSources) delay(spacingMs + Random.nextLong(-spacingMs / 5, spacingMs / 5))
+                    else delay(SKIP_STEP_MS)
+                }
             }
             logger.info(
                 "Warm-up finished: {} written, {} already present, {} skipped, {} not found, {} failed",
