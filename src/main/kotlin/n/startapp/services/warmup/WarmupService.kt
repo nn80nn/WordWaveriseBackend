@@ -82,6 +82,16 @@ class WarmupService(
     private val startedAt = AtomicReference<Long?>(null)
     private val total = AtomicInteger()
 
+    /**
+     * The rate the current run is actually using, which is not always the configured one.
+     *
+     * Pacing is the knob worth turning while watching a run — it trades throughput against
+     * getting blocked by the dictionaries — and turning it through the environment costs a
+     * redeploy, which restarts the very run being tuned. Reported rather than assumed, so status
+     * never quotes a default the run is not obeying.
+     */
+    private val perHourInUse = AtomicInteger(EnvConfig.warmupWordsPerHour)
+
     companion object {
         private val WORD_LIST_RESOURCES = listOf(
             "/wordlists/b2c1.txt",
@@ -126,14 +136,18 @@ class WarmupService(
         notFound = notFound.get(),
         failed = failed.get(),
         currentWord = current.get(),
-        wordsPerHour = EnvConfig.warmupWordsPerHour,
+        wordsPerHour = perHourInUse.get(),
         startedAt = startedAt.get(),
         lastError = lastError.get(),
         poolConfigured = n.startapp.services.ai.LlmProvider.pool().isConfigured
     )
 
-    /** @return false when a run is already in progress. */
-    fun start(limit: Int = 0): Boolean {
+    /**
+     * @param limit how many words of the list to take; 0 means all of it.
+     * @param perHour pace override; 0 means whatever the environment configures.
+     * @return false when a run is already in progress.
+     */
+    fun start(limit: Int = 0, perHour: Int = 0): Boolean {
         if (job?.isActive == true) return false
 
         val all = words()
@@ -145,12 +159,14 @@ class WarmupService(
         total.set(slice.size)
         startedAt.set(System.currentTimeMillis())
 
-        val perHour = EnvConfig.warmupWordsPerHour.coerceIn(1, 240)
-        val spacingMs = 3_600_000L / perHour
+        val effectivePerHour = (if (perHour > 0) perHour else EnvConfig.warmupWordsPerHour)
+            .coerceIn(1, 240)
+        perHourInUse.set(effectivePerHour)
+        val spacingMs = 3_600_000L / effectivePerHour
 
         logger.info(
             "Warm-up starting: {} words at {}/hour (~{} min between words)",
-            slice.size, perHour, spacingMs / 60_000
+            slice.size, effectivePerHour, spacingMs / 60_000
         )
 
         job = scope.launch {

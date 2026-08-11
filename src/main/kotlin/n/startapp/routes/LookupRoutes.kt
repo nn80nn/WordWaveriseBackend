@@ -55,7 +55,10 @@ fun Route.lookupRoutes(
             }
             // limit=0 means the whole list; start small to see how a slice behaves first.
             val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 0
-            val started = warmupService.start(limit)
+            // perHour=0 defers to the environment. Overridable here because retuning the pace
+            // through a redeploy would restart the run being retuned.
+            val perHour = call.request.queryParameters["perHour"]?.toIntOrNull() ?: 0
+            val started = warmupService.start(limit, perHour)
             call.respond(
                 ApiResponse.success(
                     WarmupStartResponse(
