@@ -40,14 +40,25 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
     private val logger = LoggerFactory.getLogger(DataMuseWordOracle::class.java)
 
     /**
-     * Occurrences per million words, below which the string is corpus noise rather than a word.
+     * Occurrences per million below which an exact match is corpus noise rather than a word.
      *
      * Common misspellings really are present in DataMuse's vocabulary — "recieve" comes back for
-     * `sp=recieve` — so a self-match proves nothing. Frequency separates them decisively:
-     * recieve 0.033 vs receive 47.9, neccessary 0.036 vs necessary 155.8. One per million keeps
-     * genuinely rare words while rejecting typos by two orders of magnitude.
+     * `sp=recieve` — so a self-match proves nothing, and frequency has to do the separating.
+     *
+     * The floor sits low because this gate answers "does this word exist", and the vocabulary the
+     * app exists to teach lives far down the tail: intertwine 0.17, serendipity 0.29, meander
+     * 0.44, candour 0.46. A gate placed above those declares the target vocabulary nonexistent
+     * and hands it to the speller, which is precisely how "intertwine" came back as
+     * "intertwined". Typos still fall well below: recieve 0.033, neccessary 0.036, decieve 0.003.
      */
-    private val MIN_FREQUENCY_PER_MILLION = 1.0
+    private val MIN_FREQUENCY_EXISTS = 0.05
+
+    /**
+     * The bar a *suggestion* has to clear, which is a different and stricter question: proposing
+     * one misspelling in place of another helps nobody. Whether a suggestion is worth overriding
+     * the user with is decided comparatively, by the caller.
+     */
+    private val MIN_FREQUENCY_SUGGEST = 1.0
 
     override suspend fun exists(word: String): Boolean {
         val target = word.trim().lowercase()
@@ -55,7 +66,7 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
         return try {
             val match = query(target, 1).firstOrNull { it.word.equals(target, ignoreCase = true) }
                 ?: return false
-            frequencyOf(match)?.let { it >= MIN_FREQUENCY_PER_MILLION } ?: true
+            frequencyOf(match)?.let { it >= MIN_FREQUENCY_EXISTS } ?: true
         } catch (e: Exception) {
             logger.debug("DataMuse existence check failed for '$target': ${e.message}")
             false
@@ -67,7 +78,7 @@ class DataMuseWordOracle(private val httpClient: HttpClient) : WordOracle {
         query(word.trim().lowercase(), max)
             .filter { !it.word.equals(word, ignoreCase = true) }
             // Suggesting one misspelling in place of another helps nobody.
-            .filter { (frequencyOf(it) ?: Double.MAX_VALUE) >= MIN_FREQUENCY_PER_MILLION }
+            .filter { (frequencyOf(it) ?: Double.MAX_VALUE) >= MIN_FREQUENCY_SUGGEST }
             .sortedByDescending { frequencyOf(it) ?: 0.0 }
             .map { it.word }
     } catch (e: Exception) {

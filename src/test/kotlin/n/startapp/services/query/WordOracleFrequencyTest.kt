@@ -19,19 +19,25 @@ import kotlin.test.assertTrue
  */
 class WordOracleFrequencyTest {
 
-    /** Frequencies here are the real values DataMuse returns for these strings. */
+    /**
+     * Frequencies here are the real values DataMuse returns for these strings, and the two
+     * thresholds mirror the production oracle: existence is judged far more leniently than
+     * suggestion, because the vocabulary this app teaches lives deep in the frequency tail.
+     */
     private class FrequencyOracle(private val frequencies: Map<String, Double>) : WordOracle {
-        private val minFrequency = 1.0
+        private val minExists = 0.05
+        private val minSuggest = 1.0
         override suspend fun exists(word: String): Boolean {
             val frequency = frequencies[word.lowercase()] ?: return false
-            return frequency >= minFrequency
+            return frequency >= minExists
         }
         override suspend fun spellingSuggestions(word: String, max: Int): List<String> =
             frequencies.entries
-                .filter { it.key != word.lowercase() && it.value >= minFrequency }
+                .filter { it.key != word.lowercase() && it.value >= minSuggest }
                 .sortedByDescending { it.value }
                 .map { it.key }
                 .take(max)
+        override suspend fun frequency(word: String): Double? = frequencies[word.lowercase()]
     }
 
     private class NeverCalledLlm : LlmClient {
@@ -95,6 +101,29 @@ class WordOracleFrequencyTest {
 
         assertEquals(QueryKind.WORD, out.kind)
         assertEquals("serendipity", out.lemma)
+    }
+
+    /**
+     * The B2/C1 band the app exists to teach sits below one per million — intertwine 0.17,
+     * serendipity 0.29, meander 0.44, candour 0.46. An existence gate set at 1.0 declares all of
+     * it nonexistent and hands it to the speller, which is how "intertwine" reached users as
+     * "intertwined": one edit away, an order of magnitude more common, and wrong.
+     */
+    @Test
+    fun `a word from the target vocabulary exists despite being rare`() = runBlocking {
+        val llm = NeverCalledLlm()
+        val resolver = QueryResolver(
+            oracle = FrequencyOracle(
+                mapOf("intertwine" to 0.167917, "intertwined" to 1.962949, "intestine" to 5.522918)
+            ),
+            llm = llm
+        )
+
+        val out = resolver.resolve("intertwine")
+
+        assertEquals(QueryKind.WORD, out.kind)
+        assertEquals("intertwine", out.lemma)
+        assertEquals(0, llm.calls)
     }
 
     @Test

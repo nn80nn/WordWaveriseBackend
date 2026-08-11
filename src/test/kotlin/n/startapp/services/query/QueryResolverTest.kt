@@ -15,7 +15,9 @@ import kotlin.test.assertTrue
 /** Hand-written fakes: only two collaborators need faking, so a mocking library earns nothing. */
 private class FakeOracle(
     private val known: Set<String> = emptySet(),
-    private val suggestions: Map<String, List<String>> = emptyMap()
+    private val suggestions: Map<String, List<String>> = emptyMap(),
+    /** Occurrences per million. Absent means the corpus has never seen the string at all. */
+    private val frequencies: Map<String, Double> = emptyMap()
 ) : WordOracle {
     var existsCalls = 0
     override suspend fun exists(word: String): Boolean {
@@ -24,6 +26,7 @@ private class FakeOracle(
     }
     override suspend fun spellingSuggestions(word: String, max: Int): List<String> =
         suggestions[word.lowercase()].orEmpty().take(max)
+    override suspend fun frequency(word: String): Double? = frequencies[word.lowercase()]
 }
 
 private class CountingLlm : LlmClient {
@@ -42,9 +45,10 @@ class QueryResolverTest {
         known: Set<String> = emptySet(),
         suggestions: Map<String, List<String>> = emptyMap(),
         corpus: Map<String, String> = emptyMap(),
+        frequencies: Map<String, Double> = emptyMap(),
         llm: LlmClient? = null
     ) = QueryResolver(
-        oracle = FakeOracle(known, suggestions),
+        oracle = FakeOracle(known, suggestions, frequencies),
         knownForm = { form -> corpus[form.lowercase()] },
         llm = llm,
         llmCache = null
@@ -168,6 +172,45 @@ class QueryResolverTest {
         assertEquals(QueryKind.WORD, out.kind)
         assertEquals("bare", out.lemma)
         assertFalse(out.correctionApplied)
+    }
+
+    @Test
+    fun `a word is never corrected into its own inflected form`() = runBlocking {
+        // Reported from the field: "intertwine" came back as "intertwined", so the article was
+        // built for the past participle and read as a verb wearing "-ed". The provider really
+        // does offer the inflection, and it really is one edit away — distance cannot catch this.
+        val out = resolver(
+            suggestions = mapOf("intertwine" to listOf("intertwined", "intestine")),
+            frequencies = mapOf("intertwine" to 0.168, "intertwined" to 1.963)
+        ).resolve("intertwine")
+
+        assertFalse(out.correctionApplied, "adding -d is inflection, not a misspelling")
+        assertEquals("intertwine", out.lemma)
+    }
+
+    @Test
+    fun `a rare word is not corrected into a merely more common neighbour`() = runBlocking {
+        // Real corrections are buried by their target; a rare word beside a common one is not.
+        val out = resolver(
+            suggestions = mapOf("meander" to listOf("meaner")),
+            frequencies = mapOf("meander" to 0.444, "meaner" to 1.2)
+        ).resolve("meander")
+
+        assertFalse(out.correctionApplied)
+        assertEquals("meander", out.lemma)
+    }
+
+    @Test
+    fun `a genuine typo is still corrected once frequencies are known`() = runBlocking {
+        val out = resolver(
+            known = setOf("necessary"),
+            suggestions = mapOf("neccessary" to listOf("necessary")),
+            frequencies = mapOf("neccessary" to 0.036, "necessary" to 155.8)
+        ).resolve("neccessary")
+
+        assertEquals(QueryKind.MISSPELLING, out.kind)
+        assertEquals("necessary", out.lemma)
+        assertTrue(out.correctionApplied)
     }
 
     @Test

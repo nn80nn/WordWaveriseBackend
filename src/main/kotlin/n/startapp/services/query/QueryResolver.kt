@@ -46,6 +46,9 @@ class QueryResolver(
     private val SENTENCE_TOKEN_THRESHOLD = 6
     private val MAX_EDIT_DISTANCE = 2
 
+    /** How much more common a candidate must be before it may override what the user typed. */
+    private val CORRECTION_FREQUENCY_RATIO = 50.0
+
     companion object {
         const val PROMPT_VERSION_RESOLVE = 1
 
@@ -158,7 +161,7 @@ class QueryResolver(
         val best = suggestions
             .filter { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
             .minByOrNull { editDistance(normalized, it) }
-        if (best != null) {
+        if (best != null && worthOverriding(normalized, best)) {
             return base(rawInput, normalized, "en", QueryKind.MISSPELLING, best).copy(
                 correctionApplied = true,
                 correctedFrom = normalized,
@@ -182,6 +185,40 @@ class QueryResolver(
         // 5. Everything deterministic missed: proper nouns, neologisms, heavy garbling.
         return resolveWithLlm(rawInput, normalized)
             ?: base(rawInput, normalized, "en", QueryKind.WORD, normalized)
+    }
+
+    /**
+     * Guards the one rung that tells the user they typed the wrong thing.
+     *
+     * Edit distance says two strings are close; it never says which one was meant. Two failures
+     * follow from taking the nearest neighbour as the answer, and each needs its own test:
+     *
+     *  - the neighbour is the typed word plus a regular ending. "intertwine" → "intertwined" is
+     *    not a correction at all, it is inflection pointing backwards: the user typed the lemma
+     *    and got sent to its own past participle, which then reads as a verb wearing "-ed";
+     *  - the neighbour is merely more common. Real corrections are buried by their target by
+     *    three orders of magnitude (receive 47.9 vs recieve 0.033, necessary 155.8 vs neccessary
+     *    0.036), while a rare word beside a common one is not (intertwined 1.96 vs intertwine
+     *    0.17). Demanding a wide margin keeps the first and rejects the second.
+     *
+     * Unknown frequency means the string is absent from the corpus entirely — that is garbage,
+     * so the correction stands.
+     */
+    private suspend fun worthOverriding(typed: String, candidate: String): Boolean {
+        if (MorphologyHeuristics.candidates(candidate).any { it.equals(typed, true) }) {
+            logger.debug("Not correcting '$typed' to its own inflection '$candidate'")
+            return false
+        }
+        val typedFrequency = oracle?.frequency(typed) ?: return true
+        val candidateFrequency = oracle?.frequency(candidate) ?: return true
+        val wideMargin = candidateFrequency >= typedFrequency * CORRECTION_FREQUENCY_RATIO
+        if (!wideMargin) {
+            logger.debug(
+                "Not correcting '$typed' ({}/M) to '$candidate' ({}/M): margin too narrow",
+                typedFrequency, candidateFrequency
+            )
+        }
+        return wideMargin
     }
 
     private suspend fun resolveWithLlm(rawInput: String, normalized: String): ResolvedQuery? {
