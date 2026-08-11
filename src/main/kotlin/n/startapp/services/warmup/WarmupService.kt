@@ -64,7 +64,8 @@ data class WarmupStartResponse(
  */
 class WarmupService(
     private val lookupService: LookupService,
-    private val oracle: WordOracle? = null
+    private val oracle: WordOracle? = null,
+    private val queue: n.startapp.repositories.WarmupQueueRepository? = null
 ) {
     private val logger = LoggerFactory.getLogger(WarmupService::class.java)
 
@@ -117,14 +118,24 @@ class WarmupService(
         private const val SKIP_STEP_MS = 200L
     }
 
-    /** The band, deduplicated and in a stable order so a restart resumes where it left off. */
-    fun words(): List<String> = WORD_LIST_RESOURCES
+    /** The bundled band, deduplicated and in a stable order so a restart resumes where it left off. */
+    fun bundledWords(): List<String> = WORD_LIST_RESOURCES
         .flatMap { resource ->
             javaClass.getResourceAsStream(resource)?.bufferedReader()?.readLines().orEmpty()
         }
         .map { it.trim().lowercase() }
         .filter { it.isNotBlank() && !it.startsWith("#") && it.all { c -> c.isLetter() } }
         .distinct()
+
+    /**
+     * Everything to warm: hand-queued words first, then the bundled band.
+     *
+     * Queued words lead because queueing one is an explicit request for that word — putting it
+     * behind two thousand others would make the button pointless. `distinct` keeps the first
+     * occurrence, so queueing a word that is also in the band promotes it rather than doubling it.
+     */
+    suspend fun words(): List<String> =
+        (queue?.words().orEmpty() + bundledWords()).distinct()
 
     fun status() = WarmupStatus(
         running = job?.isActive == true,
@@ -150,13 +161,10 @@ class WarmupService(
     fun start(limit: Int = 0, perHour: Int = 0): Boolean {
         if (job?.isActive == true) return false
 
-        val all = words()
-        val slice = if (limit > 0) all.take(limit) else all
-
         processed.set(0); written.set(0); alreadyPresent.set(0)
         skipped.set(0); notFound.set(0); failed.set(0)
         lastError.set(null)
-        total.set(slice.size)
+        total.set(0)
         startedAt.set(System.currentTimeMillis())
 
         val effectivePerHour = (if (perHour > 0) perHour else EnvConfig.warmupWordsPerHour)
@@ -164,12 +172,18 @@ class WarmupService(
         perHourInUse.set(effectivePerHour)
         val spacingMs = 3_600_000L / effectivePerHour
 
-        logger.info(
-            "Warm-up starting: {} words at {}/hour (~{} min between words)",
-            slice.size, effectivePerHour, spacingMs / 60_000
-        )
-
         job = scope.launch {
+            // Composed inside the job because the queue lives in the database: computing it
+            // before launching would mean blocking the caller of an admin endpoint on a query.
+            val all = words()
+            val slice = if (limit > 0) all.take(limit) else all
+            total.set(slice.size)
+
+            logger.info(
+                "Warm-up starting: {} words at {}/hour (~{} min between words)",
+                slice.size, effectivePerHour, spacingMs / 60_000
+            )
+
             for (word in slice) {
                 if (!isActive) break
                 current.set(word)

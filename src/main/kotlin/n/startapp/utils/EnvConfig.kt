@@ -47,9 +47,16 @@ object EnvConfig {
      * and it lands in the container as an empty string whenever Dokploy has no value for it.
      * Without this, an unset variable would beat its default and, for example, ship
      * `"model": ""` to the AI provider.
+     *
+     * A runtime override set from the admin panel wins over both files and process environment —
+     * that is what "changed here" has to mean. Because every setting in the app is read through
+     * this one function, intercepting it is the whole of the mechanism: no call site knows or
+     * needs to know that a value can now change without a redeploy. Until the database is up the
+     * override map is empty, so startup reads the deployment exactly as before.
      */
     fun get(key: String, default: String = ""): String {
-        val value = envMap[key]?.takeIf { it.isNotBlank() }
+        val value = n.startapp.services.settings.RuntimeSettings.override(key)?.takeIf { it.isNotBlank() }
+            ?: envMap[key]?.takeIf { it.isNotBlank() }
             ?: System.getenv(key)?.takeIf { it.isNotBlank() }
         return value ?: default
     }

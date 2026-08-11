@@ -6,6 +6,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import n.startapp.database.DatabaseFactory
 import n.startapp.services.AccountDeletionService
+import n.startapp.services.settings.RuntimeSettings
 import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
 import kotlin.time.Duration.Companion.hours
@@ -17,6 +18,11 @@ fun main(args: Array<String>) {
 fun Application.module() {
     // Initialize database
     DatabaseFactory.init()
+
+    // Before anything reads configuration: overrides set from the admin panel have to be in
+    // place, or the boot-time reads (warm-up auto-start, the log line below) would report the
+    // deployment while the running server obeys something else.
+    RuntimeSettings.load()
 
     logEffectiveAiConfig()
 

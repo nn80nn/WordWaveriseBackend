@@ -15,7 +15,9 @@ import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
 import n.startapp.models.HealthStatus
 import n.startapp.models.auth.UserStats
+import n.startapp.routes.adminCorpusRoutes
 import n.startapp.routes.adminRoutes
+import n.startapp.routes.adminSettingsRoutes
 import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
@@ -106,6 +108,12 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // v2 lookup: LLM-annotated article, with the raw aggregate alongside it
         lookupRoutes(services.lookupService, services.ruEnTranslationService, services.warmupService)
+
+        // Corpus statistics, article browsing and the hand-managed warm-up queue
+        adminCorpusRoutes(services.lexicalEntryRepository, services.warmupService, services.warmupQueueRepository)
+
+        // Settings editable while the server runs
+        adminSettingsRoutes()
 
         // Word-in-sentence analysis
         contextRoutes(services.contextAnalysisService)

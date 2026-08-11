@@ -3,6 +3,7 @@ package n.startapp.database
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
+import n.startapp.database.tables.AppSettings
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.LexicalEntries
@@ -11,6 +12,7 @@ import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
 import n.startapp.database.tables.TestingRequests
 import n.startapp.database.tables.Users
+import n.startapp.database.tables.WarmupQueue
 import n.startapp.utils.EnvConfig
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
@@ -56,7 +58,7 @@ object DatabaseFactory {
                 println("📋 Creating database tables if they don't exist...")
                 SchemaUtils.createMissingTablesAndColumns(
                     Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests,
-                    LlmCache, LexicalEntries
+                    LlmCache, LexicalEntries, AppSettings, WarmupQueue
                 )
                 println("✅ Database tables ready")
             }

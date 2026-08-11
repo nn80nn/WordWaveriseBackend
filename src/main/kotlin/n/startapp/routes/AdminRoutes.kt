@@ -82,11 +82,6 @@ data class AdminTestingRequest(
 
 private const val ANDROID_TESTING_URL = "https://play.google.com/apps/testing/com.wordwaverise.wordwaveriseapp"
 
-private fun checkAdminSecret(secret: String?): Boolean {
-    val adminSecret = EnvConfig.adminSecret
-    return adminSecret.isNotBlank() && secret == adminSecret
-}
-
 fun Application.adminRoutes() {
     val userRepository = UserRepository()
     val emailService = EmailService()
@@ -96,11 +91,7 @@ fun Application.adminRoutes() {
 
             // ── Stats ──────────────────────────────────────────────────────
             get("/stats") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@get
-                }
-
+                if (call.rejectedAsNonAdmin()) return@get
                 val stats = dbQuery {
                     val now = Instant.now()
                     val ago7d = now.minus(7, ChronoUnit.DAYS)
@@ -142,11 +133,7 @@ fun Application.adminRoutes() {
 
             // ── List users ─────────────────────────────────────────────────
             get("/users") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@get
-                }
-
+                if (call.rejectedAsNonAdmin()) return@get
                 val search = call.request.queryParameters["search"]?.trim()
                 val page = call.request.queryParameters["page"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
                 val pageSize = 20
@@ -187,11 +174,7 @@ fun Application.adminRoutes() {
 
             // ── Delete user ────────────────────────────────────────────────
             delete("/users/{id}") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@delete
-                }
-
+                if (call.rejectedAsNonAdmin()) return@delete
                 val userId = call.parameters["id"]?.toIntOrNull()
                     ?: throw BadRequestException("Invalid user id")
 
@@ -206,11 +189,7 @@ fun Application.adminRoutes() {
 
             // ── Reset password ─────────────────────────────────────────────
             post("/users/{id}/reset-password") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@post
-                }
-
+                if (call.rejectedAsNonAdmin()) return@post
                 val userId = call.parameters["id"]?.toIntOrNull()
                     ?: throw BadRequestException("Invalid user id")
 
@@ -222,11 +201,7 @@ fun Application.adminRoutes() {
 
             // ── Change email ───────────────────────────────────────────────
             post("/users/{id}/change-email") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@post
-                }
-
+                if (call.rejectedAsNonAdmin()) return@post
                 val userId = call.parameters["id"]?.toIntOrNull()
                     ?: throw BadRequestException("Invalid user id")
                 val request = call.receive<AdminChangeEmailRequest>()
@@ -239,11 +214,7 @@ fun Application.adminRoutes() {
 
             // ── Change login ───────────────────────────────────────────────
             post("/users/{id}/change-login") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@post
-                }
-
+                if (call.rejectedAsNonAdmin()) return@post
                 val userId = call.parameters["id"]?.toIntOrNull()
                     ?: throw BadRequestException("Invalid user id")
                 val request = call.receive<AdminChangeLoginRequest>()
@@ -258,11 +229,7 @@ fun Application.adminRoutes() {
 
             // ── Android testing requests ───────────────────────────────────
             get("/testing-requests") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@get
-                }
-
+                if (call.rejectedAsNonAdmin()) return@get
                 val requests = dbQuery {
                     TestingRequests.selectAll()
                         .orderBy(TestingRequests.createdAt to SortOrder.DESC)
@@ -280,11 +247,7 @@ fun Application.adminRoutes() {
             }
 
             post("/testing-requests/{id}/invite") {
-                if (!checkAdminSecret(call.request.headers["X-Admin-Secret"])) {
-                    call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                    return@post
-                }
-
+                if (call.rejectedAsNonAdmin()) return@post
                 val requestId = call.parameters["id"]?.toIntOrNull()
                     ?: throw BadRequestException("Invalid request id")
 

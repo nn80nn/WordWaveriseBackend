@@ -10,7 +10,6 @@ import n.startapp.services.LookupService
 import n.startapp.services.query.RuEnTranslationService
 import n.startapp.services.warmup.WarmupService
 import n.startapp.services.warmup.WarmupStartResponse
-import n.startapp.utils.EnvConfig
 
 /**
  * v2 lookup. Separate from `/api/words/details` because [n.startapp.models.lookup.LookupResponse]
@@ -41,18 +40,12 @@ fun Route.lookupRoutes(
     // Corpus warm-up: builds articles ahead of demand, on the reserve pool.
     route("/api/admin/warmup") {
         get("/status") {
-            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
-                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                return@get
-            }
+            if (call.rejectedAsNonAdmin()) return@get
             call.respond(ApiResponse.success(warmupService.status()))
         }
 
         post("/start") {
-            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
-                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                return@post
-            }
+            if (call.rejectedAsNonAdmin()) return@post
             // limit=0 means the whole list; start small to see how a slice behaves first.
             val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 0
             // perHour=0 defers to the environment. Overridable here because retuning the pace
@@ -71,10 +64,7 @@ fun Route.lookupRoutes(
         }
 
         post("/stop") {
-            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
-                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                return@post
-            }
+            if (call.rejectedAsNonAdmin()) return@post
             warmupService.stop()
             call.respond(ApiResponse.success(warmupService.status()))
         }
@@ -84,10 +74,7 @@ fun Route.lookupRoutes(
         // Synchronous annotation with the failure reason attached. Annotation runs in the
         // background on the normal path, so without this a broken provider is invisible.
         get("/diagnose") {
-            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
-                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                return@get
-            }
+            if (call.rejectedAsNonAdmin()) return@get
             val query = call.request.queryParameters["query"]
                 ?: throw BadRequestException("Query parameter 'query' is required")
             call.respond(ApiResponse.success(lookupService.diagnose(query)))
@@ -96,18 +83,10 @@ fun Route.lookupRoutes(
         // Drops the cached article for a lemma so the next lookup regenerates it — the escape
         // hatch for a bad article, since these entries otherwise never expire.
         post("/invalidate") {
-            if (!isAdmin(call.request.headers["X-Admin-Secret"])) {
-                call.respond(HttpStatusCode.Unauthorized, ApiResponse.error<Nothing>("Unauthorized"))
-                return@post
-            }
+            if (call.rejectedAsNonAdmin()) return@post
             val lemma = call.request.queryParameters["lemma"]
                 ?: throw BadRequestException("Query parameter 'lemma' is required")
             call.respond(ApiResponse.success(mapOf("removed" to lookupService.invalidate(lemma))))
         }
     }
-}
-
-private fun isAdmin(secret: String?): Boolean {
-    val expected = EnvConfig.adminSecret
-    return expected.isNotBlank() && secret == expected
 }

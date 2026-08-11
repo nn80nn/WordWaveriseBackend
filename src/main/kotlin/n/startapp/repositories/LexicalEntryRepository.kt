@@ -4,16 +4,25 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.LexicalEntries
+import n.startapp.models.admin.CorpusEntriesPage
+import n.startapp.models.admin.CorpusEntrySummary
+import n.startapp.models.admin.CorpusStats
+import n.startapp.models.admin.NamedCount
 import n.startapp.models.dictionary.WordDetailResponse
 import n.startapp.models.lexical.LEXICAL_SCHEMA_VERSION
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.services.ai.LlmUsage
+import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
+import org.jetbrains.exposed.sql.avg
+import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.sum
 import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
@@ -156,6 +165,111 @@ class LexicalEntryRepository {
 
     suspend fun deleteByLemma(lemma: String): Int = dbQuery {
         LexicalEntries.deleteWhere { LexicalEntries.lemma eq lemma.trim().lowercase() }
+    }
+
+    // ── Admin views ─────────────────────────────────────────────────────────
+
+    /** Every headword the corpus answers for, for set arithmetic against a word list. */
+    suspend fun allLemmas(): Set<String> = dbQuery {
+        LexicalEntries.select(LexicalEntries.lemma).withDistinct()
+            .map { it[LexicalEntries.lemma] }
+            .toSet()
+    }
+
+    suspend fun browse(search: String?, page: Int, pageSize: Int): CorpusEntriesPage = dbQuery {
+        val needle = search?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+        val condition: Op<Boolean> =
+            if (needle == null) Op.TRUE else (LexicalEntries.lemma like "%$needle%")
+
+        val total = LexicalEntries.selectAll().where(condition).count()
+        val rows = LexicalEntries
+            .selectAll()
+            .where(condition)
+            .orderBy(LexicalEntries.updatedAt to SortOrder.DESC)
+            .limit(pageSize, offset = ((page - 1).toLong() * pageSize))
+            .map { row ->
+                // The body is decoded only for the rows on screen; the table itself stores no
+                // sense count, and denormalising one would be a second thing to keep in sync.
+                val entry = runCatching {
+                    json.decodeFromString<LexicalEntry>(row[LexicalEntries.entryJson])
+                }.getOrNull()
+
+                CorpusEntrySummary(
+                    lemma = row[LexicalEntries.lemma],
+                    kind = row[LexicalEntries.kind],
+                    model = row[LexicalEntries.model],
+                    posCount = entry?.posGroups?.size ?: 0,
+                    senseCount = entry?.posGroups?.sumOf { it.senses.size } ?: 0,
+                    sources = entry?.sources?.map { it.source }?.distinct()?.sorted().orEmpty(),
+                    aiGenerated = row[LexicalEntries.aiGenerated],
+                    hitCount = row[LexicalEntries.hitCount],
+                    tokens = row[LexicalEntries.promptTokens] + row[LexicalEntries.completionTokens],
+                    latencyMs = row[LexicalEntries.latencyMs],
+                    createdAt = row[LexicalEntries.createdAt],
+                    updatedAt = row[LexicalEntries.updatedAt]
+                )
+            }
+
+        CorpusEntriesPage(entries = rows, total = total, page = page, pageSize = pageSize)
+    }
+
+    suspend fun stats(warmupWords: List<String>, queueWords: List<String>): CorpusStats = dbQuery {
+        val now = System.currentTimeMillis()
+        val day = 24 * 60 * 60 * 1000L
+
+        val idCount = LexicalEntries.id.count()
+        val total = LexicalEntries.selectAll().count()
+
+        val byKind = LexicalEntries.select(LexicalEntries.kind, idCount)
+            .groupBy(LexicalEntries.kind)
+            .map { NamedCount(it[LexicalEntries.kind], it[idCount]) }
+            .sortedByDescending { it.count }
+
+        val byModel = LexicalEntries.select(LexicalEntries.model, idCount)
+            .groupBy(LexicalEntries.model)
+            .map { NamedCount(it[LexicalEntries.model].ifBlank { "—" }, it[idCount]) }
+            .sortedByDescending { it.count }
+
+        val topByHits = LexicalEntries
+            .select(LexicalEntries.lemma, LexicalEntries.hitCount)
+            .orderBy(LexicalEntries.hitCount to SortOrder.DESC)
+            .limit(15)
+            .map { NamedCount(it[LexicalEntries.lemma], it[LexicalEntries.hitCount]) }
+            .filter { it.count > 0 }
+
+        val promptSum = LexicalEntries.promptTokens.sum()
+        val completionSum = LexicalEntries.completionTokens.sum()
+        val hitSum = LexicalEntries.hitCount.sum()
+        val latencyAvg = LexicalEntries.latencyMs.avg()
+        val totals = LexicalEntries.select(promptSum, completionSum, hitSum, latencyAvg).first()
+
+        val lemmas = LexicalEntries.select(LexicalEntries.lemma).withDistinct()
+            .map { it[LexicalEntries.lemma] }
+            .toSet()
+
+        CorpusStats(
+            totalEntries = total,
+            aiGenerated = LexicalEntries.selectAll()
+                .where { LexicalEntries.aiGenerated eq true }.count(),
+            // An article whose grounding is empty is one the sources never actually supported.
+            withoutSources = LexicalEntries.selectAll()
+                .where { LexicalEntries.formsIndex eq "" }.count(),
+            added24h = LexicalEntries.selectAll()
+                .where { LexicalEntries.createdAt greater (now - day) }.count(),
+            added7d = LexicalEntries.selectAll()
+                .where { LexicalEntries.createdAt greater (now - 7 * day) }.count(),
+            totalHits = totals[hitSum] ?: 0L,
+            promptTokens = totals[promptSum]?.toLong() ?: 0L,
+            completionTokens = totals[completionSum]?.toLong() ?: 0L,
+            avgLatencyMs = totals[latencyAvg]?.toLong() ?: 0L,
+            byKind = byKind,
+            byModel = byModel,
+            topByHits = topByHits,
+            warmupListSize = warmupWords.size,
+            warmupListCovered = warmupWords.count { it in lemmas },
+            queueSize = queueWords.size,
+            queueCovered = queueWords.count { it in lemmas }
+        )
     }
 
     companion object {

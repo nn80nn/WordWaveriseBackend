@@ -42,6 +42,20 @@ object AiCompat {
 
     private fun dialect(provider: String) = dialects.computeIfAbsent(provider) { Dialect() }
 
+    /**
+     * Forgets what every provider was adapted to, so the next call re-reads the configuration.
+     *
+     * A dialect is captured on first use and then only ever narrowed by rejections, which is
+     * right while the model stays put and wrong the moment it changes: a body adapted to gpt-5.x
+     * is exactly the body llama refuses. Without this, editing a model in the admin panel would
+     * leave the client using settings the panel no longer shows — the panel would be lying.
+     */
+    fun reset(logger: Logger? = null) {
+        if (dialects.isEmpty()) return
+        dialects.clear()
+        logger?.info("Provider dialects reset; configuration will be re-read on the next call")
+    }
+
     fun tokenParam(provider: String): String = dialect(provider).tokenParam.get()
     fun supportsTemperature(provider: String): Boolean = dialect(provider).supportsTemperature.get()
     fun structuredMode(provider: String): StructuredMode = dialect(provider).structuredMode.get()

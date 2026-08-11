@@ -64,7 +64,8 @@ class ServiceRegistry {
     )
 
     private val warmupOracle = DataMuseWordOracle(oracleHttpClient)
-    val warmupService = WarmupService(lookupService, warmupOracle)
+    val warmupQueueRepository = n.startapp.repositories.WarmupQueueRepository()
+    val warmupService = WarmupService(lookupService, warmupOracle, warmupQueueRepository)
 
     init {
         if (EnvConfig.warmupEnabled) {
