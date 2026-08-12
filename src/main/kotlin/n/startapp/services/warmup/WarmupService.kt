@@ -208,6 +208,12 @@ class WarmupService(
                             }
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // Stopping is not a failure. Swallowed by the catch below, it charged the
+                    // operator an error and left "StandaloneCoroutine was cancelled" sitting in
+                    // the panel as the last thing that went wrong — every single time the stop
+                    // button was pressed.
+                    throw e
                 } catch (e: Exception) {
                     // One bad word must never end the run; there are two thousand more.
                     failed.incrementAndGet()
