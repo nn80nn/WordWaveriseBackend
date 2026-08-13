@@ -123,7 +123,7 @@ class FlashcardService {
      */
     suspend fun getAllFlashcards(userId: Int): List<FlashcardDto> {
         logger.info("Fetching all flashcards for user $userId")
-        val flashcards = repository.getAllByUser(userId)
+        val flashcards = refreshFromCorpus(repository.getAllByUser(userId))
         return flashcards.map { flashcardToDto(it) }
     }
 
@@ -190,31 +190,39 @@ class FlashcardService {
      * Applied to the due list rather than to every list: it is bounded by what
      * the user is about to see, and that is exactly the text that matters.
      */
-    private suspend fun refreshFromCorpus(cards: List<Flashcard>): List<Flashcard> =
-        cards.map { card ->
+    private suspend fun refreshFromCorpus(cards: List<Flashcard>): List<Flashcard> {
+        if (cards.isEmpty()) return cards
+
+        val entries = try {
+            lexicalEntries.findLatestByLemmas(cards.map { it.word })
+        } catch (e: Exception) {
+            // Stale wording is not worth failing a study session over.
+            logger.warn("Could not read the corpus while refreshing cards: ${e.message}")
+            return cards
+        }
+
+        return cards.map { card ->
+            val fresh = entries[card.word.trim().lowercase()]?.let { wordingOf(it) }
+                ?: return@map card
+
+            val definitionChanged = fresh.definition != null && fresh.definition != card.definition
+            val translationChanged = fresh.translation.isNotBlank() && fresh.translation != card.translation
+            if (!definitionChanged && !translationChanged) return@map card
+
+            val translation = if (translationChanged) fresh.translation else card.translation
+            val definition = if (definitionChanged) fresh.definition else card.definition
+            val example = fresh.example ?: card.example
+
             try {
-                val entry = lexicalEntries.findLatestByLemma(card.word.lowercase())
-                    ?: return@map card
-                val fresh = wordingOf(entry) ?: return@map card
-
-                val definitionChanged = fresh.definition != null && fresh.definition != card.definition
-                val translationChanged = fresh.translation.isNotBlank() && fresh.translation != card.translation
-
-                if (!definitionChanged && !translationChanged) return@map card
-
-                val translation = if (translationChanged) fresh.translation else card.translation
-                val definition = if (definitionChanged) fresh.definition else card.definition
-                val example = fresh.example ?: card.example
-
                 repository.updateContent(card.id, translation, definition, example)
                 logger.info("Refreshed card ${card.id} ('${card.word}') from the corpus")
                 card.copy(translation = translation, definition = definition, example = example)
             } catch (e: Exception) {
-                // Stale wording is not worth failing a study session over.
                 logger.warn("Could not refresh card ${card.id}: ${e.message}")
                 card
             }
         }
+    }
 
     private data class Wording(
         val translation: String,

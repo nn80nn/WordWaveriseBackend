@@ -16,6 +16,7 @@ import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
 import org.jetbrains.exposed.sql.avg
 import org.jetbrains.exposed.sql.count
@@ -161,6 +162,32 @@ class LexicalEntryRepository {
             ?.let { row ->
                 runCatching { json.decodeFromString<LexicalEntry>(row[LexicalEntries.entryJson]) }.getOrNull()
             }
+    }
+
+    /**
+     * The same lookup for a set of lemmas in one round trip. Refreshing a card
+     * list one query at a time would put a query per card on a request that is
+     * already reading every card.
+     *
+     * Newest wins: rows arrive newest-first and the first one seen for a lemma
+     * is kept, which mirrors [findLatestByLemma] for a single word.
+     */
+    suspend fun findLatestByLemmas(lemmas: Collection<String>): Map<String, LexicalEntry> = dbQuery {
+        val wanted = lemmas.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+        if (wanted.isEmpty()) return@dbQuery emptyMap()
+
+        val out = LinkedHashMap<String, LexicalEntry>()
+        LexicalEntries.selectAll()
+            .where { LexicalEntries.lemma inList wanted }
+            .orderBy(LexicalEntries.updatedAt to SortOrder.DESC)
+            .forEach { row ->
+                val lemma = row[LexicalEntries.lemma]
+                if (lemma in out) return@forEach
+                runCatching { json.decodeFromString<LexicalEntry>(row[LexicalEntries.entryJson]) }
+                    .getOrNull()
+                    ?.let { out[lemma] = it }
+            }
+        out
     }
 
     suspend fun deleteByLemma(lemma: String): Int = dbQuery {
