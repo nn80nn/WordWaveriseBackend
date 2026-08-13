@@ -49,6 +49,24 @@ class FlashcardRepository {
     /**
      * Create a flashcard from a saved word
      */
+    /**
+     * Rewrites what a card *says* and leaves what the scheduler *knows* alone —
+     * ease factor, repetitions and the next due date are untouched, so a card
+     * whose wording is corrected does not lose its place in the rotation.
+     */
+    suspend fun updateContent(
+        cardId: Int,
+        translation: String,
+        definition: String?,
+        example: String?
+    ): Boolean = dbQuery {
+        Flashcards.update({ Flashcards.id eq cardId }) {
+            it[Flashcards.translation] = translation
+            it[Flashcards.definition] = definition
+            it[Flashcards.example] = example
+        } > 0
+    }
+
     suspend fun createFromSavedWord(userId: Int, savedWordId: Int): Flashcard? = dbQuery {
         // Get saved word details
         val savedWord = SavedWords.select { SavedWords.id eq savedWordId }

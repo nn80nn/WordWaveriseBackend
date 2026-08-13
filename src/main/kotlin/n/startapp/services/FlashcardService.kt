@@ -2,7 +2,9 @@ package n.startapp.services
 
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.flashcard.*
+import n.startapp.models.lexical.LexicalEntry
 import n.startapp.repositories.FlashcardRepository
+import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.utils.SpacedRepetitionAlgorithm
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -14,6 +16,7 @@ import java.time.temporal.ChronoUnit
 class FlashcardService {
     private val logger = LoggerFactory.getLogger(FlashcardService::class.java)
     private val repository = FlashcardRepository()
+    private val lexicalEntries = LexicalEntryRepository()
 
     /**
      * Create a flashcard directly
@@ -56,7 +59,7 @@ class FlashcardService {
     suspend fun getDueFlashcards(userId: Int): DueFlashcardsResponse {
         logger.info("Fetching due flashcards for user $userId")
 
-        val dueCards = repository.getDueFlashcards(userId)
+        val dueCards = refreshFromCorpus(repository.getDueFlashcards(userId))
         val dtos = dueCards.map { flashcardToDto(it) }
 
         return DueFlashcardsResponse(
@@ -170,6 +173,65 @@ class FlashcardService {
             daysUntilReview = daysUntilReview
         )
     }
+
+    // ── Keeping a card in step with the dictionary ─────────────────────────
+
+    /**
+     * A card copies its wording from the saved word at creation and then never
+     * looks again, so a definition scraped with a typo — "on which ojects are
+     * placed" — stays on the card long after the dictionary itself is correct.
+     *
+     * This re-reads the wording from the corpus that is **already stored**:
+     * [LexicalEntryRepository.findLatestByLemma] is a single indexed lookup and
+     * never triggers a scrape or an LLM call, so a study session cannot turn
+     * into a fan-out of network work. A word with no article yet is simply left
+     * as it is and picked up on a later session.
+     *
+     * Applied to the due list rather than to every list: it is bounded by what
+     * the user is about to see, and that is exactly the text that matters.
+     */
+    private suspend fun refreshFromCorpus(cards: List<Flashcard>): List<Flashcard> =
+        cards.map { card ->
+            try {
+                val entry = lexicalEntries.findLatestByLemma(card.word.lowercase())
+                    ?: return@map card
+                val fresh = wordingOf(entry) ?: return@map card
+
+                val definitionChanged = fresh.definition != null && fresh.definition != card.definition
+                val translationChanged = fresh.translation.isNotBlank() && fresh.translation != card.translation
+
+                if (!definitionChanged && !translationChanged) return@map card
+
+                val translation = if (translationChanged) fresh.translation else card.translation
+                val definition = if (definitionChanged) fresh.definition else card.definition
+                val example = fresh.example ?: card.example
+
+                repository.updateContent(card.id, translation, definition, example)
+                logger.info("Refreshed card ${card.id} ('${card.word}') from the corpus")
+                card.copy(translation = translation, definition = definition, example = example)
+            } catch (e: Exception) {
+                // Stale wording is not worth failing a study session over.
+                logger.warn("Could not refresh card ${card.id}: ${e.message}")
+                card
+            }
+        }
+
+    private data class Wording(
+        val translation: String,
+        val definition: String?,
+        val example: String?
+    )
+
+    /** The first sense of the first part of speech — what a card shows. */
+    private fun wordingOf(entry: LexicalEntry): Wording? {
+        val sense = entry.posGroups.firstOrNull()?.senses?.firstOrNull() ?: return null
+        return Wording(
+            translation = sense.translationsRu.joinToString(", ").trim(),
+            definition = sense.definitionEn.takeIf { it.isNotBlank() },
+            example = sense.examples.firstOrNull()?.en?.takeIf { it.isNotBlank() }
+        )
+    }
+
 }
 
 /**
