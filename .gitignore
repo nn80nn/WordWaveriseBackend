@@ -44,3 +44,6 @@ out/
 ### Temporary Files ###
 nul
 CLAUDE.md
+# Locally generated VAPID key pair. The private key must never reach the repository —
+# it goes straight into Dokploy > Environment.
+.env.vapid.local
