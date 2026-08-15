@@ -68,7 +68,14 @@ dependencies {
 
     // Web Push (VAPID signing + aes128gcm payload encryption). Pulls BouncyCastle, which the
     // library registers as a JCE provider — the JDK has no P-256 ECDH primitives it can use here.
-    implementation("nl.martijndwars:web-push:5.1.1")
+    // web-push тянет async-http-client, а тот — netty 4.1. В netty 4.2 класс
+    // io.netty.handler.codec.DefaultHeadersImpl переехал в netty-codec-base, но старый
+    // netty-codec:4.1 всё ещё несёт его под тем же именем и в fat JAR перекрывает новый —
+    // Ktor падал на каждом соединении с NoSuchMethodError. Синхронный путь (тот, что мы
+    // зовём) работает на Apache HttpClient, поэтому AHC не нужен вовсе.
+    implementation("nl.martijndwars:web-push:5.1.1") {
+        exclude(group = "org.asynchttpclient")
+    }
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 
