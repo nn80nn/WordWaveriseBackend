@@ -5,6 +5,7 @@ import n.startapp.repositories.LlmCacheRepository
 import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
 import n.startapp.services.LookupService
+import n.startapp.services.PushService
 import n.startapp.services.SuggestService
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.OpenAiCompatibleLlmClient
@@ -38,6 +39,10 @@ class ServiceRegistry {
     val ruEnTranslationService = RuEnTranslationService(llmClient, llmCacheRepository)
 
     val aiService = AiService(llmClient)
+
+    // Holds no connection of its own: the push client is built per send, because the VAPID
+    // keys are read through EnvConfig and the admin panel can change them without a restart.
+    val pushService = PushService()
 
     // Practice sessions read the corpus the warm-up already built; the model is asked for one
     // exercise kind only, and that answer is cached forever.

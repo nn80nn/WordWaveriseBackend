@@ -25,6 +25,7 @@ import n.startapp.routes.exerciseRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.contextRoutes
 import n.startapp.routes.lookupRoutes
+import n.startapp.routes.pushRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.routes.seoRoutes
 import n.startapp.routes.testingRoutes
@@ -151,6 +152,9 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // Practice sessions built from a folder (protected)
         exerciseRoutes(services.exerciseService)
+
+        // Web Push subscriptions. The public key is public; storing and sending are behind JWT.
+        pushRoutes(services.pushService)
 
         // User stats (protected)
         authenticate("auth-jwt") {

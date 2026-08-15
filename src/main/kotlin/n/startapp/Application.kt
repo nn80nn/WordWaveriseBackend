@@ -46,6 +46,25 @@ fun Application.module() {
                 .onFailure { logger.error("Account deletion sweep failed: {}", it.message) }
         }
     }
+
+    // Daily review reminder.
+    //
+    // Hourly ticks with an hour check rather than a scheduler: a container restart must not
+    // skip the day's send nor cause a second one, and the 20-hour floor inside
+    // PushService.sendReviewReminders is what actually makes it idempotent. Waking every hour
+    // and doing nothing 23 times costs less than owning a cron.
+    val pushLogger = LoggerFactory.getLogger("PushReminderJob")
+    launch {
+        while (isActive) {
+            delay(1.hours)
+            if (!EnvConfig.pushRemindersEnabled) continue
+            if (java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).hour != EnvConfig.pushReminderHourUtc) continue
+
+            runCatching { services.pushService.sendReviewReminders() }
+                .onSuccess { if (it > 0) pushLogger.info("Review reminders sent: {}", it) }
+                .onFailure { pushLogger.error("Review reminder sweep failed: {}", it.message) }
+        }
+    }
 }
 
 /**

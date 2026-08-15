@@ -66,6 +66,12 @@ dependencies {
     // HTML parsing for scrapers
     implementation("org.jsoup:jsoup:1.18.3")
 
+    // Web Push (VAPID signing + aes128gcm payload encryption). Pulls BouncyCastle, which the
+    // library registers as a JCE provider — the JDK has no P-256 ECDH primitives it can use here.
+    implementation("nl.martijndwars:web-push:5.1.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
+
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 }

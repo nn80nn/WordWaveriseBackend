@@ -8,6 +8,7 @@ import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.LexicalEntries
 import n.startapp.database.tables.LlmCache
+import n.startapp.database.tables.PushSubscriptions
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
 import n.startapp.database.tables.TestingRequests
@@ -58,7 +59,7 @@ object DatabaseFactory {
                 println("📋 Creating database tables if they don't exist...")
                 SchemaUtils.createMissingTablesAndColumns(
                     Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests,
-                    LlmCache, LexicalEntries, AppSettings, WarmupQueue
+                    LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions
                 )
                 println("✅ Database tables ready")
             }

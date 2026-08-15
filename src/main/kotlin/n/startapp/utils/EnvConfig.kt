@@ -156,4 +156,28 @@ object EnvConfig {
 
     // Account deletion grace period
     val accountDeletionGraceDays: Int get() = getInt("ACCOUNT_DELETION_GRACE_DAYS", 30)
+
+    // ── Web Push ────────────────────────────────────────────────────────────
+    /**
+     * VAPID key pair, base64url. Generate once with `npx web-push generate-vapid-keys` and set
+     * both in Dokploy; rotating them invalidates every stored subscription, because a push
+     * service ties the endpoint it issued to the key that requested it.
+     *
+     * Absent keys disable the feature outright — see `PushService.configured`. Nothing is
+     * stored either, so a later rollout does not start with a table of undeliverable rows.
+     */
+    val vapidPublicKey: String get() = get("VAPID_PUBLIC_KEY", "")
+    val vapidPrivateKey: String get() = get("VAPID_PRIVATE_KEY", "")
+
+    /** Contact for the push service if deliveries misbehave; must be a mailto: or https: URL. */
+    val vapidSubject: String get() = get("VAPID_SUBJECT", "mailto:support@wordwaverise.com")
+
+    /** Master switch for the daily reminder sweep. Subscribing works regardless. */
+    val pushRemindersEnabled: Boolean get() = get("PUSH_REMINDERS_ENABLED", "false").equals("true", true)
+
+    /**
+     * Hour (UTC) the daily sweep fires. Default 15:00 UTC = 18:00 in Moscow — evening, when
+     * a reminder is an invitation rather than an interruption.
+     */
+    val pushReminderHourUtc: Int get() = getInt("PUSH_REMINDER_HOUR_UTC", 15)
 }
