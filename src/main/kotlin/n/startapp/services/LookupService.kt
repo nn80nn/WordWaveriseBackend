@@ -21,6 +21,7 @@ import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.repositories.StoredEntry
 import n.startapp.services.dictionary.AggregatedWord
 import n.startapp.services.dictionary.DictionaryAggregationService
+import n.startapp.services.dictionary.SpellingGloss
 import n.startapp.services.lexical.LexicalAnnotationService
 import n.startapp.services.lexical.LexicalEntryFallback
 import n.startapp.services.lexical.LexicalPromptBuilder
@@ -259,6 +260,26 @@ class LookupService(
             return ungroundedLookup(resolution, notice, lemma, cacheKey)
         }
 
+        // The form has an entry, but the entry may say it is not a word. Wiktionary documents
+        // misspellings — "occured" comes back as "Misspelling of occurred" — so having sources
+        // is not the same as being a headword, and this is the one reading of the evidence that
+        // is not a guess: the dictionary names the target itself. Checked before annotation so a
+        // typo never costs a model call.
+        SpellingGloss.redirectTarget(aggregate.response.definitions.map { it.definition })
+            ?.takeIf { !it.equals(lemma, true) && resolution.correctedFrom == null }
+            ?.let { target ->
+                logger.info("'{}' is glossed only as a pointer to '{}'", lemma, target)
+                return lookupResolved(
+                    resolution.copy(
+                        kind = QueryKind.MISSPELLING,
+                        lemma = target,
+                        correctionApplied = true,
+                        correctedFrom = resolution.normalized,
+                        fallback = null
+                    )
+                )
+            }
+
         degraded.getIfPresent(cacheKey)?.let { failed ->
             return LookupResponse(
                 resolution = resolution,
@@ -454,7 +475,12 @@ class LookupService(
             // The article below is for what was typed; the neighbour is merely offered. No
             // `originalQuery`, because there is nothing to undo — the clients turn that field
             // into an "Искать точно" button, and here the exact search is already what is shown.
-            resolution.fallback != null -> LookupNotice(
+            //
+            // Only a speller's suggestion is worth showing. The morphology rung's fallback is a
+            // mechanical stem guess that exists to be tried, not read: it offered "wav" for
+            // "waver", which is a plausible thing to look up next and an absurd thing to ask
+            // someone whether they meant.
+            resolution.fallback?.kind == QueryKind.MISSPELLING -> LookupNotice(
                 type = "did_you_mean",
                 textRu = "Возможно, вы искали «${resolution.fallback.form}»?"
             )
