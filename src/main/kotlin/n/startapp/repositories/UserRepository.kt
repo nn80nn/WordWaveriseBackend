@@ -81,8 +81,16 @@ class UserRepository {
                     .map(::resultRowToUser)
                     .singleOrNull()
                 if (existing != null) {
-                    Users.update({ Users.id eq existing.id }) { it[Users.googleId] = googleId }
-                    existing.copy(googleId = googleId)
+                    // Google уже проверил этот адрес (маршрут не пускает неподтверждённые),
+                    // так что незаконченная регистрация по паролю подтверждается здесь же —
+                    // иначе человек с кодом в почте застрял бы между двумя способами входа.
+                    Users.update({ Users.id eq existing.id }) {
+                        it[Users.googleId] = googleId
+                        it[Users.emailVerified] = true
+                        it[Users.verificationCode] = null
+                        it[Users.verificationCodeExpiresAt] = null
+                    }
+                    existing.copy(googleId = googleId, emailVerified = true)
                 } else {
                     val generatedLogin = generateLoginFromEmail(email)
                     val stmt = Users.insert {

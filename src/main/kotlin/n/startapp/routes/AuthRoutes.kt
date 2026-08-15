@@ -75,7 +75,14 @@ fun Route.authRoutes() {
             }
 
             // Check if user already exists
-            if (userRepository.existsByEmail(request.email)) {
+            val sameEmail = userRepository.findByEmail(request.email)
+            if (sameEmail != null) {
+                // Тот же адрес уже занят входом через Google: предлагать «уже есть аккаунт,
+                // войдите» бесполезно — пароля у этого аккаунта нет, и вход по паролю
+                // отправит человека по кругу.
+                if (sameEmail.passwordHash.isBlank() && sameEmail.googleId != null) {
+                    throw BadRequestException("This email is already signed up with Google")
+                }
                 throw BadRequestException("User with this email already exists")
             }
 
@@ -181,6 +188,15 @@ fun Route.authRoutes() {
                 if (aud != clientId) throw UnauthorizedException("Token audience mismatch")
             }
 
+            // Совпадение адреса — это то, что склеивает вход по паролю и вход через Google в
+            // один аккаунт, поэтому неподтверждённый адрес принимать нельзя: тогда чужой
+            // Google-аккаунт, заведённый на наш email, забрал бы себе учётку с паролем.
+            // tokeninfo отдаёт поле строкой, а не булевым.
+            val emailVerified = json["email_verified"]?.jsonPrimitive?.content
+            if (emailVerified != "true") {
+                throw UnauthorizedException("Google account email is not verified")
+            }
+
             val user = userRepository.findOrCreateByGoogle(email, googleId)
             val token = JwtUtil.generateToken(user)
             call.respond(ApiResponse.success(AuthResponse(token = token, user = user.toDTO())))
@@ -196,6 +212,13 @@ fun Route.authRoutes() {
 
             val user = userRepository.findByEmail(request.email)
                 ?: throw UnauthorizedException("Invalid email or password")
+
+            // Аккаунт, заведённый через Google, живёт с пустым хешем. Bcrypt на нём просто
+            // не сойдётся, и человек получил бы «неверный пароль» на пароль, которого у него
+            // никогда не было, — с единственным выходом «восстановить» несуществующий.
+            if (user.passwordHash.isBlank()) {
+                throw UnauthorizedException("This account uses Google Sign-In")
+            }
 
             if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
                 throw UnauthorizedException("Invalid email or password")

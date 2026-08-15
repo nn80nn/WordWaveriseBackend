@@ -141,7 +141,9 @@ data class BulkCreateFlashcardsRequest(
 @Serializable
 data class BulkCreateFlashcardsResult(
     val created: Int,
-    val skipped: Int
+    val skipped: Int,
+    /** Cards that already existed outside any folder and were pulled into this one. */
+    val moved: Int = 0
 )
 
 /**

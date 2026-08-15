@@ -83,9 +83,16 @@ class FlashcardService {
 
     /** Creates the cards a folder is missing, in one action. */
     suspend fun createMissingFromCategory(userId: Int, categoryId: Int?): BulkCreateFlashcardsResult {
-        val (created, skipped) = repository.createMissingFromCategory(userId, categoryId)
-        logger.info("User $userId filled folder $categoryId: created=$created, skipped=$skipped")
-        return BulkCreateFlashcardsResult(created = created, skipped = skipped)
+        val outcome = repository.createMissingFromCategory(userId, categoryId)
+        logger.info(
+            "User $userId filled folder $categoryId: created=${outcome.created}, " +
+                "moved=${outcome.moved}, skipped=${outcome.skipped}"
+        )
+        return BulkCreateFlashcardsResult(
+            created = outcome.created,
+            skipped = outcome.skipped,
+            moved = outcome.moved,
+        )
     }
 
     /**

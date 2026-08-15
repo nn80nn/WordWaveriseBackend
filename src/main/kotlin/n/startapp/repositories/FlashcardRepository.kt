@@ -1,6 +1,7 @@
 package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
+import n.startapp.services.flashcard.BulkFill
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.UNCATEGORIZED_CATEGORY_ID
@@ -138,37 +139,61 @@ class FlashcardRepository {
     }
 
     /**
-     * Creates a card for every saved word in [categoryId] that does not have one yet.
+     * Creates the cards a folder is missing, and pulls in the ones that exist but sit loose.
      *
      * Matching is by word rather than by `savedWordId` because cards created before folders
      * existed, or created by hand from the search screen, carry no saved-word link — going by
      * the id alone would hand the user a second copy of every such word.
      *
-     * @return created count to skipped count.
+     * A word can already have a card that lives outside any folder: it was made before the
+     * word was filed. Counting that as "already exists" left the folder empty while the button
+     * reported there was nothing to do — the folder stayed unpracticable and the user had no
+     * way forward. Such a card is adopted into the folder instead of being duplicated, so its
+     * review history survives. A card sitting in a *different* real folder is left alone: that
+     * placement was somebody's decision, and filling one folder must not empty another.
+     *
+     * @return counts of created, adopted and skipped words.
      */
-    suspend fun createMissingFromCategory(userId: Int, categoryId: Int?): Pair<Int, Int> = dbQuery {
+    suspend fun createMissingFromCategory(userId: Int, categoryId: Int?): BulkOutcome = dbQuery {
         val words = SavedWords.select {
             (SavedWords.userId eq userId) and savedWordCategoryClause(categoryId)
         }.toList()
 
-        val existing = Flashcards.select { Flashcards.userId eq userId }
-            .map { it[Flashcards.word].trim().lowercase() }
-            .toHashSet()
+        // Карточка на слово может быть только одна, поэтому по ключу держим её папку и id.
+        val existing = HashMap<String, Pair<Int, Int?>>()
+        Flashcards.select { Flashcards.userId eq userId }.forEach {
+            existing[it[Flashcards.word].trim().lowercase()] =
+                it[Flashcards.id].value to it[Flashcards.categoryId]
+        }
 
         var created = 0
+        var moved = 0
         var skipped = 0
         val now = Instant.now()
 
         words.forEach { row ->
             val word = row[SavedWords.word]
-            if (!existing.add(word.trim().lowercase())) {
-                skipped++
+            val key = word.trim().lowercase()
+            val target = row[SavedWords.categoryId]
+            val card = existing[key]
+            if (card != null) {
+                val (cardId, cardCategory) = card
+                if (BulkFill.actionFor(cardCategory, target) == BulkFill.Action.ADOPT) {
+                    Flashcards.update({ Flashcards.id eq cardId }) {
+                        it[Flashcards.categoryId] = target
+                        it[updatedAt] = now
+                    }
+                    existing[key] = cardId to target
+                    moved++
+                } else {
+                    skipped++
+                }
                 return@forEach
             }
-            Flashcards.insertAndGetId {
+            val newId = Flashcards.insertAndGetId {
                 it[Flashcards.userId] = userId
                 it[savedWordId] = row[SavedWords.id]
-                it[Flashcards.categoryId] = row[SavedWords.categoryId]
+                it[Flashcards.categoryId] = target
                 it[Flashcards.word] = word
                 it[translation] = row[SavedWords.translation] ?: ""
                 it[definition] = row[SavedWords.definition]
@@ -181,11 +206,17 @@ class FlashcardRepository {
                 it[createdAt] = now
                 it[updatedAt] = now
             }
+            // Одно и то же слово может лежать в папке дважды — без этого второй проход
+            // создал бы ему вторую карточку.
+            existing[key] = newId.value to target
             created++
         }
 
-        created to skipped
+        BulkOutcome(created = created, moved = moved, skipped = skipped)
     }
+
+    /** What one bulk fill did, before it is turned into an API response. */
+    data class BulkOutcome(val created: Int, val moved: Int, val skipped: Int)
 
     /**
      * Get all flashcards due for review for a user
