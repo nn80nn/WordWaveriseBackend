@@ -104,6 +104,10 @@ class ExerciseService(
                 ("Слово по определению" to "Английское определение и четыре слова."),
             ExerciseKind.TRANSLATE_RU_EN to
                 ("Перевод на английский" to "Русское значение — напишите английское слово."),
+            ExerciseKind.TRANSLATE_EN_RU to
+                ("Перевод на русский" to "Английское слово — напишите значение. Подойдёт любое."),
+            ExerciseKind.LISTENING to
+                ("На слух" to "Послушайте запись и напишите слово."),
             ExerciseKind.FILL_BLANK to
                 ("Пропущенное слово" to "Настоящее предложение из словаря с пропуском."),
             ExerciseKind.CONTEXT_CHOICE to

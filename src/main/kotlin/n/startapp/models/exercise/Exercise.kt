@@ -26,6 +26,16 @@ enum class ExerciseKind {
     /** Russian equivalent → type the English word. */
     TRANSLATE_RU_EN,
 
+    /**
+     * English word → type the Russian.
+     *
+     * The direction the other kinds never test: recognising a word is not the same as being
+     * able to say what it means. Accepts every translation the article records, across all
+     * senses — a word with several meanings has several right answers, and marking one of them
+     * wrong teaches the learner to distrust the exercise.
+     */
+    TRANSLATE_EN_RU,
+
     /** Real example sentence with the word removed → type it back. */
     FILL_BLANK,
 
@@ -39,7 +49,16 @@ enum class ExerciseKind {
     WORD_FORM,
 
     /** Definition (and audio, if any) → spell the word. */
-    SPELLING
+    SPELLING,
+
+    /**
+     * Hear the word, write it down.
+     *
+     * The only kind that practises the sound-to-spelling link, which is where English is at its
+     * most treacherous. Costs nothing to produce: the audio was already scraped into the
+     * article alongside the IPA.
+     */
+    LISTENING
 }
 
 /** How the client renders the answer control. Nothing else about a kind matters to layout. */
@@ -91,6 +110,11 @@ data class Exercise(
     val answer: String,
     /** Everything else accepted as correct, already normalised by [ExerciseGrading.normalize]. */
     val acceptedAnswers: List<String> = emptyList(),
+    /**
+     * Recording of the word, when the article has one. Present only for kinds that need it —
+     * a client shows a play control exactly when this is set, and never guesses from [kind].
+     */
+    val audioUrl: String? = null,
     val hintRu: String? = null,
     /** Why this answer — shown after answering, which is where the learning actually happens. */
     val explanationRu: String? = null,

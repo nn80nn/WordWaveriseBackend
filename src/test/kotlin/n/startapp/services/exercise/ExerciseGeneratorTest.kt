@@ -8,6 +8,7 @@ import n.startapp.models.lexical.InflectedForms
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.lexical.PosGroup
 import n.startapp.models.lexical.Sense
+import n.startapp.models.dictionary.PronunciationEntry
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,12 +26,19 @@ class ExerciseGeneratorTest {
         definition: String = "a definition long enough to be usable",
         examples: List<BilingualExample> = emptyList(),
         collocations: List<Collocation> = emptyList(),
-        forms: InflectedForms? = null
+        forms: InflectedForms? = null,
+        synonyms: List<String> = emptyList(),
+        pos: String = "verb",
+        extraSenses: List<Sense> = emptyList(),
+        audioUrl: String? = null,
+        pronunciations: List<PronunciationEntry> = emptyList()
     ) = LexicalEntry(
         lemma = lemma,
+        audioUrl = audioUrl,
+        pronunciations = pronunciations,
         posGroups = listOf(
             PosGroup(
-                pos = "verb",
+                pos = pos,
                 posRu = "глагол",
                 forms = forms,
                 senses = listOf(
@@ -40,11 +48,19 @@ class ExerciseGeneratorTest {
                         definitionRu = "определение",
                         translationsRu = translations,
                         examples = examples,
-                        collocations = collocations
+                        collocations = collocations,
+                        synonyms = synonyms
                     )
-                )
+                ) + extraSenses
             )
         )
+    )
+
+    private fun sense(id: String, definition: String, translations: List<String>) = Sense(
+        id = id,
+        definitionEn = definition,
+        definitionRu = "определение",
+        translationsRu = translations
     )
 
     private fun word(
@@ -192,5 +208,162 @@ class ExerciseGeneratorTest {
         assertTrue(ExerciseGenerator.letterHint("resolve").startsWith("r"))
         assertTrue(ExerciseGenerator.letterHint("resolve").contains("·"))
         assertTrue(!ExerciseGenerator.letterHint("resolve").contains("resolve"))
+    }
+
+    // ── Distractors that are actually worth getting wrong ─────────────────────
+
+    @Test
+    fun `a word listed as a synonym is preferred over an unrelated one`() {
+        val target = word(
+            "resolve",
+            translation = "решать",
+            definition = "to settle a dispute or a problem firmly",
+            entry = entry("resolve", translations = listOf("решать"), synonyms = listOf("settle"))
+        )
+        val settle = word(
+            "settle",
+            translation = "улаживать",
+            entry = entry("settle", translations = listOf("улаживать"))
+        )
+        // Padding, so the question can be built at all — but none of it is close in meaning.
+        val strangers = listOf(
+            word("protractor", translation = "транспортир", entry = entry("protractor", listOf("транспортир"), pos = "noun")),
+            word("cliff", translation = "обрыв", entry = entry("cliff", listOf("обрыв"), pos = "noun")),
+            word("heavy", translation = "тяжёлый", entry = entry("heavy", listOf("тяжёлый"), pos = "adjective"))
+        )
+        val pool = listOf(target, settle) + strangers
+
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, pool, ExerciseKind.MEANING_CHOICE, random)
+        )
+        // The near-miss must be on offer; a question whose only plausible option is the answer
+        // can be passed without knowing the word.
+        assertTrue(
+            "улаживать" in exercise.options,
+            "the synonym's meaning should be one of the traps: ${exercise.options}"
+        )
+    }
+
+    @Test
+    fun `another sense of the same word is never offered as a wrong answer`() {
+        // `come across` means both "meet by chance" and "give an impression"; both are right,
+        // so putting the second one among the traps makes the question unanswerable.
+        val target = word(
+            "come across",
+            entry = entry(
+                "come across",
+                translations = listOf("наткнуться"),
+                extraSenses = listOf(sense("v2", "to give an impression", listOf("производить впечатление")))
+            )
+        )
+        val pool = listOf(
+            target,
+            word("protractor", translation = "производить впечатление"),
+            word("cliff", translation = "обрыв"),
+            word("heavy", translation = "тяжёлый"),
+            word("gather", translation = "собирать")
+        )
+
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, pool, ExerciseKind.MEANING_CHOICE, random)
+        )
+        assertTrue(
+            "производить впечатление" !in exercise.options,
+            "a second sense of the target is a true answer, not a trap: ${exercise.options}"
+        )
+    }
+
+    // ── Both directions of translation ───────────────────────────────────────
+
+    @Test
+    fun `two words sharing one Russian meaning are both accepted`() {
+        val resolve = word("resolve", entry = entry("resolve", translations = listOf("решать")))
+        val settle = word(
+            "settle",
+            entry = entry("settle", translations = listOf("улаживать", "решать"))
+        )
+        val pool = listOf(resolve, settle)
+
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(resolve, pool, ExerciseKind.TRANSLATE_RU_EN, random)
+        )
+        assertEquals("решать", exercise.question)
+        // The prompt cannot say which of the two it wants, so it must not punish either.
+        assertEquals(
+            ExerciseVerdict.CORRECT,
+            ExerciseGrading.grade(exercise, "settle"),
+            "accepted: ${ExerciseGrading.accepted(exercise)}"
+        )
+        assertEquals(ExerciseVerdict.CORRECT, ExerciseGrading.grade(exercise, "resolve"))
+    }
+
+    @Test
+    fun `a word with several meanings accepts any of them in the Russian direction`() {
+        val target = word(
+            "resolve",
+            entry = entry(
+                "resolve",
+                translations = listOf("решать", "разрешать"),
+                extraSenses = listOf(sense("v2", "to decide firmly", listOf("твёрдо решить")))
+            )
+        )
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.TRANSLATE_EN_RU, random)
+        )
+        assertEquals("resolve", exercise.question)
+        assertEquals(ExerciseVerdict.CORRECT, ExerciseGrading.grade(exercise, "решать"))
+        assertEquals(ExerciseVerdict.CORRECT, ExerciseGrading.grade(exercise, "разрешать"))
+        // ...including a sense the prompt never showed.
+        assertEquals(ExerciseVerdict.CORRECT, ExerciseGrading.grade(exercise, "твёрдо решить"))
+        assertEquals(ExerciseVerdict.WRONG, ExerciseGrading.grade(exercise, "собирать"))
+    }
+
+    @Test
+    fun `a stored translation holding several equivalents counts as all of them`() {
+        // Cards store "решать, улаживать" in one string; the second half is no less correct.
+        val target = word("resolve", translation = "решать, улаживать")
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.TRANSLATE_EN_RU, random)
+        )
+        assertEquals(ExerciseVerdict.CORRECT, ExerciseGrading.grade(exercise, "улаживать"))
+    }
+
+    // ── Listening ────────────────────────────────────────────────────────────
+
+    @Test
+    fun `a listening question carries the recording and no text at all`() {
+        val target = word(
+            "resolve",
+            translation = "решать",
+            entry = entry("resolve", audioUrl = "https://audio.example/resolve.mp3")
+        )
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.LISTENING, random)
+        )
+        assertEquals("https://audio.example/resolve.mp3", exercise.audioUrl)
+        assertEquals("resolve", exercise.answer)
+        // Showing the meaning would turn it into a translation exercise with a sound effect.
+        assertTrue(exercise.question.isBlank(), "question was: '${exercise.question}'")
+    }
+
+    @Test
+    fun `the recording is found wherever the article keeps it`() {
+        val target = word(
+            "resolve",
+            entry = entry(
+                "resolve",
+                pronunciations = listOf(PronunciationEntry(region = "uk", audioMp3Url = "https://a/uk.mp3"))
+            )
+        )
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.LISTENING, random)
+        )
+        assertEquals("https://a/uk.mp3", exercise.audioUrl)
+    }
+
+    @Test
+    fun `a word with no recording produces no listening question`() {
+        val target = word("resolve", translation = "решать", entry = entry("resolve"))
+        assertNull(ExerciseGenerator.build(target, listOf(target), ExerciseKind.LISTENING, random))
     }
 }

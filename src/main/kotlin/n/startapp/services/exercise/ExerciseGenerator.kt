@@ -37,9 +37,9 @@ data class PracticeWord(
  *
  * The point of doing this here rather than in a prompt is that the corpus already holds the
  * things a good exercise is made of — a real definition, a real bilingual example, real
- * collocations, real inflected forms. Asking a model to invent them would be slower, cost a
- * call per question, and produce sentences no dictionary ever vouched for. The model is left
- * with the one kind that genuinely needs it (see [ExerciseKind.CONTEXT_CHOICE] in
+ * collocations, real inflected forms, a recording. Asking a model to invent them would be
+ * slower, cost a call per question, and produce sentences no dictionary ever vouched for. The
+ * model is left with the one kind that genuinely needs it (see [ExerciseKind.CONTEXT_CHOICE] in
  * [ExerciseService]), and everything here is instant, free and repeatable.
  *
  * Pure: no IO, no clock, and randomness arrives as a parameter, so the whole thing is testable.
@@ -51,13 +51,18 @@ object ExerciseGenerator {
         ExerciseKind.MEANING_CHOICE,
         ExerciseKind.WORD_CHOICE,
         ExerciseKind.TRANSLATE_RU_EN,
+        ExerciseKind.TRANSLATE_EN_RU,
         ExerciseKind.FILL_BLANK,
         ExerciseKind.COLLOCATION,
         ExerciseKind.WORD_FORM,
-        ExerciseKind.SPELLING
+        ExerciseKind.SPELLING,
+        ExerciseKind.LISTENING
     )
 
     private const val OPTIONS = 4
+
+    /** Definition overlap above which two words count as neighbours rather than strangers. */
+    private const val NEIGHBOUR_OVERLAP = 0.2
 
     /** Every question of [kind] the pool can support, in pool order. */
     fun build(pool: List<PracticeWord>, kind: ExerciseKind, random: Random): List<Exercise> =
@@ -71,11 +76,13 @@ object ExerciseGenerator {
     ): Exercise? = when (kind) {
         ExerciseKind.MEANING_CHOICE -> meaningChoice(target, pool, random)
         ExerciseKind.WORD_CHOICE -> wordChoice(target, pool, random)
-        ExerciseKind.TRANSLATE_RU_EN -> translateRuEn(target)
+        ExerciseKind.TRANSLATE_RU_EN -> translateRuEn(target, pool)
+        ExerciseKind.TRANSLATE_EN_RU -> translateEnRu(target)
         ExerciseKind.FILL_BLANK -> fillBlank(target)
         ExerciseKind.COLLOCATION -> collocation(target, pool, random)
         ExerciseKind.WORD_FORM -> wordForm(target, random)
         ExerciseKind.SPELLING -> spelling(target)
+        ExerciseKind.LISTENING -> listening(target)
         ExerciseKind.CONTEXT_CHOICE -> null // model-written; see ExerciseService
     }
 
@@ -84,13 +91,16 @@ object ExerciseGenerator {
     /** «Что значит X?» — the Russian side, because that is how the word was learned. */
     private fun meaningChoice(target: PracticeWord, pool: List<PracticeWord>, random: Random): Exercise? {
         val correct = russianOf(target) ?: return null
-        val distractors = pool.asSequence()
-            .filter { it.word != target.word }
+
+        // Every sense of the target, not only the one on show. A second sense of the same word
+        // is a *true* answer wearing a distractor's clothes, and offering it makes the question
+        // unanswerable — the one failure mode a vocabulary exercise cannot afford.
+        val ownMeanings = allRussianOf(target).map(ExerciseGrading::normalize).toSet()
+
+        val distractors = rankedPeers(target, pool, random)
             .mapNotNull(::russianOf)
-            .filter { !sameMeaning(it, correct) }
-            .distinct()
-            .toList()
-            .shuffled(random)
+            .filter { ExerciseGrading.normalize(it) !in ownMeanings }
+            .distinctBy(ExerciseGrading::normalize)
             .take(OPTIONS - 1)
         if (distractors.size < OPTIONS - 1) return null
 
@@ -116,12 +126,9 @@ object ExerciseGenerator {
     /** The reverse direction, and deliberately from the English definition rather than the Russian. */
     private fun wordChoice(target: PracticeWord, pool: List<PracticeWord>, random: Random): Exercise? {
         val definition = target.definition?.trim()?.takeIf { it.length > 8 } ?: return null
-        val distractors = pool.asSequence()
-            .filter { !it.word.equals(target.word, ignoreCase = true) }
+        val distractors = rankedPeers(target, pool, random)
             .map { it.word }
             .distinctBy { it.lowercase() }
-            .toList()
-            .shuffled(random)
             .take(OPTIONS - 1)
         if (distractors.size < OPTIONS - 1) return null
 
@@ -163,12 +170,9 @@ object ExerciseGenerator {
         val surface = findForm(candidate.pattern, target.forms) ?: return null
         val question = blankOut(candidate.pattern, surface)
 
-        val distractors = pool.asSequence()
-            .filter { !it.word.equals(target.word, ignoreCase = true) }
+        val distractors = rankedPeers(target, pool, random)
             .map { it.word }
             .distinctBy { it.lowercase() }
-            .toList()
-            .shuffled(random)
             .take(OPTIONS - 1)
         if (distractors.size < OPTIONS - 1) return null
 
@@ -195,8 +199,27 @@ object ExerciseGenerator {
 
     // ── Typed kinds ───────────────────────────────────────────────────────────
 
-    private fun translateRuEn(target: PracticeWord): Exercise? {
+    /**
+     * Russian meaning in, English word out.
+     *
+     * A folder can easily hold two words for one Russian meaning — *resolve* and *settle* are
+     * both «решать». The question shows the meaning and cannot say which of them it wants, so
+     * every pool word that carries that meaning is accepted. Insisting on one of two right
+     * answers is the fastest way to teach someone that the exercise is not to be trusted.
+     */
+    private fun translateRuEn(target: PracticeWord, pool: List<PracticeWord>): Exercise? {
         val russian = russianOf(target) ?: return null
+        val shown = splitMeanings(russian).map(ExerciseGrading::normalize).toSet()
+
+        val alsoRight = pool.asSequence()
+            .filter { !it.word.equals(target.word, ignoreCase = true) }
+            .filter { peer ->
+                allRussianOf(peer).any { ExerciseGrading.normalize(it) in shown }
+            }
+            .map { it.word }
+            .distinctBy { it.lowercase() }
+            .toList()
+
         return Exercise(
             id = id(target, ExerciseKind.TRANSLATE_RU_EN),
             kind = ExerciseKind.TRANSLATE_RU_EN,
@@ -205,9 +228,40 @@ object ExerciseGenerator {
             promptRu = "Напишите английское слово",
             question = russian,
             answer = target.word,
-            acceptedAnswers = emptyList(),
+            acceptedAnswers = alsoRight,
             hintRu = letterHint(target.word),
             explanationRu = target.definition,
+            cardId = target.cardId,
+            savedWordId = target.savedWordId,
+            source = if (target.entry != null) ExerciseSource.CORPUS else ExerciseSource.CARD
+        )
+    }
+
+    /**
+     * English word in, Russian meaning out — the direction nothing else tests.
+     *
+     * Every equivalent the article records counts, across every sense: a word with several
+     * meanings has several right answers, and «разрешать» for *resolve* is not a lesser answer
+     * than «решать».
+     */
+    private fun translateEnRu(target: PracticeWord): Exercise? {
+        val all = allRussianOf(target)
+        val primary = all.firstOrNull() ?: return null
+
+        return Exercise(
+            id = id(target, ExerciseKind.TRANSLATE_EN_RU),
+            kind = ExerciseKind.TRANSLATE_EN_RU,
+            format = ExerciseFormat.INPUT,
+            word = target.word,
+            promptRu = "Напишите значение по-русски",
+            question = target.word,
+            answer = primary,
+            acceptedAnswers = all.drop(1),
+            hintRu = target.entry?.posGroups?.firstOrNull()?.posRu,
+            explanationRu = listOfNotNull(
+                all.takeIf { it.size > 1 }?.joinToString(", ")?.let { "Подходит любое: $it" },
+                target.definition
+            ).joinToString("\n").takeIf { it.isNotBlank() },
             cardId = target.cardId,
             savedWordId = target.savedWordId,
             source = if (target.entry != null) ExerciseSource.CORPUS else ExerciseSource.CARD
@@ -304,6 +358,36 @@ object ExerciseGenerator {
         )
     }
 
+    /**
+     * Hear it, write it.
+     *
+     * The recording is already in the article — scraped beside the IPA and never model-written
+     * — so this is the cheapest exercise there is and the only one that practises the link
+     * English breaks most often: what a word sounds like against how it is spelled.
+     *
+     * The question carries no text at all. Showing the meaning would turn it back into a
+     * translation exercise with a sound effect.
+     */
+    private fun listening(target: PracticeWord): Exercise? {
+        val audio = audioOf(target) ?: return null
+        return Exercise(
+            id = id(target, ExerciseKind.LISTENING),
+            kind = ExerciseKind.LISTENING,
+            format = ExerciseFormat.INPUT,
+            word = target.word,
+            promptRu = "Послушайте и напишите слово",
+            question = "",
+            audioUrl = audio,
+            answer = target.word,
+            hintRu = letterHint(target.word),
+            explanationRu = listOfNotNull(russianOf(target), target.definition)
+                .joinToString(" — ").takeIf { it.isNotBlank() },
+            cardId = target.cardId,
+            savedWordId = target.savedWordId,
+            source = ExerciseSource.CORPUS
+        )
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /** The Russian side of a word: the corpus sense first, the card's own wording second. */
@@ -313,16 +397,108 @@ object ExerciseGenerator {
         return fromEntry ?: word.translation?.trim()?.takeIf { it.isNotBlank() }
     }
 
-    /** Two options must not be the same answer wearing different punctuation. */
-    private fun sameMeaning(a: String, b: String): Boolean =
-        ExerciseGrading.normalize(a) == ExerciseGrading.normalize(b)
+    /**
+     * Every Russian equivalent the article records, across every part of speech and every sense
+     * — in article order, so the first one is still the primary meaning.
+     */
+    fun allRussianOf(word: PracticeWord): List<String> {
+        val fromEntry = word.entry?.posGroups.orEmpty()
+            .flatMap { it.senses }
+            .flatMap { it.translationsRu }
+        return (fromEntry + splitMeanings(word.translation.orEmpty()))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy(ExerciseGrading::normalize)
+    }
 
-    /** `p·······e` — enough to confirm a half-remembered word, not enough to guess a new one. */
+    /** A stored translation is often several equivalents in one string. */
+    private fun splitMeanings(value: String): List<String> =
+        value.split(',', ';', '/')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+    /**
+     * The other words in the folder, closest in meaning first.
+     *
+     * Random distractors make a choice question a formality: *transportir* is never mistaken
+     * for *come across*, so the learner picks the only plausible option without knowing the
+     * word. The article already says which words are close — its `synonyms`, its part of
+     * speech, the wording of its definition — and a near-miss is both harder and the only
+     * version that teaches anything. Ties are broken randomly so the same folder does not
+     * produce the same four options every time.
+     */
+    private fun rankedPeers(
+        target: PracticeWord,
+        pool: List<PracticeWord>,
+        random: Random
+    ): List<PracticeWord> {
+        val targetSynonyms = synonymsOf(target)
+        val targetPos = posOf(target)
+        val targetWords = significantWords(target.definition.orEmpty())
+
+        return pool.asSequence()
+            .filter { !it.word.equals(target.word, ignoreCase = true) }
+            .toList()
+            .shuffled(random)
+            .sortedByDescending { peer ->
+                val synonymLinked = peer.word.lowercase() in targetSynonyms ||
+                    target.word.lowercase() in synonymsOf(peer)
+                val samePos = targetPos != null && posOf(peer) == targetPos
+                val overlap = overlapRatio(targetWords, significantWords(peer.definition.orEmpty()))
+                when {
+                    synonymLinked -> 3
+                    samePos && overlap >= NEIGHBOUR_OVERLAP -> 2
+                    samePos -> 1
+                    else -> 0
+                }
+            }
+    }
+
+    private fun synonymsOf(word: PracticeWord): Set<String> =
+        word.entry?.posGroups.orEmpty()
+            .flatMap { it.senses }
+            .flatMap { it.synonyms }
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
+
+    private fun posOf(word: PracticeWord): String? =
+        word.entry?.posGroups?.firstOrNull()?.pos?.trim()?.lowercase()
+
+    /** The recording, wherever the article happens to keep it. */
+    private fun audioOf(word: PracticeWord): String? {
+        val entry = word.entry ?: return null
+        entry.audioUrl?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        entry.pronunciations.firstNotNullOfOrNull { it.audioMp3Url?.takeIf { url -> url.isNotBlank() } }
+            ?.let { return it }
+        return entry.posGroups
+            .flatMap { it.pronunciations }
+            .firstNotNullOfOrNull { it.audioMp3Url?.takeIf { url -> url.isNotBlank() } }
+    }
+
+    /** `p·····e` — enough to confirm a half-remembered word, not enough to guess a new one. */
     fun letterHint(word: String): String {
         val trimmed = word.trim()
         if (trimmed.length < 3) return "${trimmed.length} букв"
         return trimmed.first() + "·".repeat(trimmed.length - 2) + trimmed.last() +
             "  (${trimmed.length})"
+    }
+
+    private val STOP_WORDS = setOf(
+        "a", "an", "the", "of", "to", "or", "and", "in", "on", "for", "with",
+        "that", "this", "is", "are", "be", "as", "by", "at", "from", "it", "its",
+        "something", "someone", "make", "made", "used"
+    )
+
+    private fun significantWords(text: String): Set<String> =
+        text.lowercase()
+            .split(Regex("[^a-z]+"))
+            .filter { it.length > 2 && it !in STOP_WORDS }
+            .toSet()
+
+    private fun overlapRatio(a: Set<String>, b: Set<String>): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        return a.intersect(b).size.toDouble() / minOf(a.size, b.size)
     }
 
     private fun wordRegex(form: String): Regex =
