@@ -26,7 +26,8 @@ class FlashcardService {
         word: String,
         translation: String,
         definition: String?,
-        example: String?
+        example: String?,
+        categoryId: Int? = null
     ): FlashcardDto {
         logger.info("Creating flashcard directly for user $userId: word='$word'")
 
@@ -35,10 +36,56 @@ class FlashcardService {
             word = word,
             translation = translation,
             definition = definition,
-            example = example
+            example = example,
+            categoryId = categoryId
         )
 
         return flashcardToDto(flashcard)
+    }
+
+    /**
+     * Replaces what a card says, and marks it as hand-edited so the corpus refresh stops
+     * rewriting it. Losing a correction on the next study session would make the editor
+     * pointless — see [refreshFromCorpus].
+     */
+    suspend fun updateContent(
+        userId: Int,
+        cardId: Int,
+        word: String?,
+        translation: String,
+        definition: String?,
+        example: String?
+    ): FlashcardDto {
+        repository.getById(cardId, userId) ?: throw NotFoundException("Flashcard not found")
+
+        val updated = repository.updateContent(
+            cardId = cardId,
+            translation = translation,
+            definition = definition,
+            example = example,
+            word = word,
+            customized = true,
+            userId = userId
+        )
+        if (!updated) throw NotFoundException("Flashcard not found")
+
+        val fresh = repository.getById(cardId, userId) ?: throw NotFoundException("Flashcard not found")
+        logger.info("User $userId edited card $cardId ('${fresh.word}')")
+        return flashcardToDto(fresh)
+    }
+
+    suspend fun setCategory(userId: Int, cardId: Int, categoryId: Int?): FlashcardDto {
+        val moved = repository.setCategory(cardId, userId, categoryId)
+        if (!moved) throw NotFoundException("Flashcard not found")
+        val fresh = repository.getById(cardId, userId) ?: throw NotFoundException("Flashcard not found")
+        return flashcardToDto(fresh)
+    }
+
+    /** Creates the cards a folder is missing, in one action. */
+    suspend fun createMissingFromCategory(userId: Int, categoryId: Int?): BulkCreateFlashcardsResult {
+        val (created, skipped) = repository.createMissingFromCategory(userId, categoryId)
+        logger.info("User $userId filled folder $categoryId: created=$created, skipped=$skipped")
+        return BulkCreateFlashcardsResult(created = created, skipped = skipped)
     }
 
     /**
@@ -56,10 +103,10 @@ class FlashcardService {
     /**
      * Get all flashcards due for review
      */
-    suspend fun getDueFlashcards(userId: Int): DueFlashcardsResponse {
-        logger.info("Fetching due flashcards for user $userId")
+    suspend fun getDueFlashcards(userId: Int, categoryId: Int? = null): DueFlashcardsResponse {
+        logger.info("Fetching due flashcards for user $userId (folder=$categoryId)")
 
-        val dueCards = refreshFromCorpus(repository.getDueFlashcards(userId))
+        val dueCards = refreshFromCorpus(repository.getDueFlashcards(userId, categoryId))
         val dtos = dueCards.map { flashcardToDto(it) }
 
         return DueFlashcardsResponse(
@@ -121,9 +168,9 @@ class FlashcardService {
     /**
      * Get all flashcards for a user
      */
-    suspend fun getAllFlashcards(userId: Int): List<FlashcardDto> {
-        logger.info("Fetching all flashcards for user $userId")
-        val flashcards = refreshFromCorpus(repository.getAllByUser(userId))
+    suspend fun getAllFlashcards(userId: Int, categoryId: Int? = null): List<FlashcardDto> {
+        logger.info("Fetching all flashcards for user $userId (folder=$categoryId)")
+        val flashcards = refreshFromCorpus(repository.getAllByUser(userId, categoryId))
         return flashcards.map { flashcardToDto(it) }
     }
 
@@ -142,10 +189,9 @@ class FlashcardService {
     /**
      * Get statistics about user's flashcards
      */
-    suspend fun getStatistics(userId: Int): FlashcardStatistics {
-        val allCards = repository.getAllByUser(userId)
-        val dueCount = repository.countDue(userId)
-        val now = Instant.now()
+    suspend fun getStatistics(userId: Int, categoryId: Int? = null): FlashcardStatistics {
+        val allCards = repository.getAllByUser(userId, categoryId)
+        val dueCount = repository.countDue(userId, categoryId)
 
         return FlashcardStatistics(
             totalCards = allCards.size,
@@ -169,6 +215,9 @@ class FlashcardService {
             translation = flashcard.translation,
             definition = flashcard.definition,
             example = flashcard.example,
+            categoryId = flashcard.categoryId,
+            customized = flashcard.customized,
+            repetitions = flashcard.repetitions,
             nextReview = flashcard.nextReview,
             daysUntilReview = daysUntilReview
         )
@@ -193,8 +242,14 @@ class FlashcardService {
     private suspend fun refreshFromCorpus(cards: List<Flashcard>): List<Flashcard> {
         if (cards.isEmpty()) return cards
 
+        // A card the user edited by hand is theirs. Re-reading it from the dictionary here
+        // would undo the edit on the very next study session, which is exactly the moment they
+        // would see it — so hand-edited cards are excluded before any lookup happens.
+        val refreshable = cards.filterNot { it.customized }
+        if (refreshable.isEmpty()) return cards
+
         val entries = try {
-            lexicalEntries.findLatestByLemmas(cards.map { it.word })
+            lexicalEntries.findLatestByLemmas(refreshable.map { it.word })
         } catch (e: Exception) {
             // Stale wording is not worth failing a study session over.
             logger.warn("Could not read the corpus while refreshing cards: ${e.message}")
@@ -202,6 +257,7 @@ class FlashcardService {
         }
 
         return cards.map { card ->
+            if (card.customized) return@map card
             val fresh = entries[card.word.trim().lowercase()]?.let { wordingOf(it) }
                 ?: return@map card
 

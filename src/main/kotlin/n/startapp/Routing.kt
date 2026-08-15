@@ -21,6 +21,7 @@ import n.startapp.routes.adminSettingsRoutes
 import n.startapp.routes.aiRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
+import n.startapp.routes.exerciseRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.contextRoutes
 import n.startapp.routes.lookupRoutes
@@ -147,6 +148,9 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // Category routes (protected)
         categoryRoutes()
+
+        // Practice sessions built from a folder (protected)
+        exerciseRoutes(services.exerciseService)
 
         // User stats (protected)
         authenticate("auth-jwt") {

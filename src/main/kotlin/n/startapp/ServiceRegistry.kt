@@ -9,6 +9,7 @@ import n.startapp.services.SuggestService
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.OpenAiCompatibleLlmClient
 import n.startapp.services.dictionary.DictionaryAggregationService
+import n.startapp.services.exercise.ExerciseService
 import n.startapp.services.context.ContextAnalysisService
 import n.startapp.services.lexical.LexicalAnnotationService
 import n.startapp.services.query.DataMuseWordOracle
@@ -37,6 +38,14 @@ class ServiceRegistry {
     val ruEnTranslationService = RuEnTranslationService(llmClient, llmCacheRepository)
 
     val aiService = AiService(llmClient)
+
+    // Practice sessions read the corpus the warm-up already built; the model is asked for one
+    // exercise kind only, and that answer is cached forever.
+    val exerciseService = ExerciseService(
+        llm = llmClient,
+        entries = lexicalEntryRepository,
+        cache = llmCacheRepository
+    )
     val dictionaryService = DictionaryService(aiService, lexicalEntryRepository)
     val suggestService = SuggestService(ruEnTranslationService)
 

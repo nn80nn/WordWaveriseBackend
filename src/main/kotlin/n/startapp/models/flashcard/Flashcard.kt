@@ -11,6 +11,7 @@ data class Flashcard(
     val id: Int,
     val userId: Int,
     val savedWordId: Int?,
+    val categoryId: Int? = null,
     val word: String,
     val translation: String,
     val definition: String?,
@@ -22,6 +23,8 @@ data class Flashcard(
     val nextReview: Instant,
     @Serializable(with = InstantSerializer::class)
     val lastReviewed: Instant?,
+    /** Hand-edited: the corpus refresh leaves this card's wording alone. */
+    val customized: Boolean = false,
     @Serializable(with = InstantSerializer::class)
     val createdAt: Instant,
     @Serializable(with = InstantSerializer::class)
@@ -38,6 +41,10 @@ data class FlashcardDto(
     val translation: String,
     val definition: String?,
     val example: String?,
+    val categoryId: Int? = null,
+    val customized: Boolean = false,
+    /** Consecutive correct reviews — what the clients render as a progress dot row. */
+    val repetitions: Int = 0,
     @Serializable(with = InstantSerializer::class)
     val nextReview: Instant,
     val daysUntilReview: Int
@@ -100,7 +107,41 @@ data class CreateFlashcardDirectRequest(
     val word: String,
     val translation: String,
     val definition: String? = null,
+    val example: String? = null,
+    val categoryId: Int? = null
+)
+
+/**
+ * Replaces what the card says.
+ *
+ * [word] is optional because changing it is a different act from fixing a translation: it
+ * re-points the card at another headword, and the corpus link goes with it.
+ */
+@Serializable
+data class UpdateFlashcardContentRequest(
+    val word: String? = null,
+    val translation: String,
+    val definition: String? = null,
     val example: String? = null
+)
+
+@Serializable
+data class SetFlashcardCategoryRequest(
+    /** null removes the card from every folder. */
+    val categoryId: Int? = null
+)
+
+/** Fill a folder with cards in one action, from the words already saved in it. */
+@Serializable
+data class BulkCreateFlashcardsRequest(
+    /** null = every saved word; -1 = only the words in no folder. */
+    val categoryId: Int? = null
+)
+
+@Serializable
+data class BulkCreateFlashcardsResult(
+    val created: Int,
+    val skipped: Int
 )
 
 /**
