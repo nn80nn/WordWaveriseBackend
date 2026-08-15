@@ -67,6 +67,13 @@ class SpellingGlossTest {
     }
 
     @Test
+    fun `a spelling that is merely dead is followed too`() {
+        // "untill" is the whole reason the marker cannot be the word "misspelling": Wiktionary
+        // calls it obsolete, not wrong, and it has no other sense.
+        assertEquals("until", SpellingGloss.redirectTarget(listOf("Obsolete spelling of until .")))
+    }
+
+    @Test
     fun `an alternative spelling alone is a word, not a mistake`() {
         // "colour" points at "color" without anyone having got anything wrong.
         assertNull(SpellingGloss.redirectTarget(listOf("Alternative spelling of color.")))
