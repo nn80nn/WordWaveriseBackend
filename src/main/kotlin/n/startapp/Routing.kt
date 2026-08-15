@@ -141,7 +141,7 @@ fun Application.configureRouting(services: ServiceRegistry) {
         authRoutes()
 
         // Saved words routes (protected)
-        savedWordsRoutes()
+        savedWordsRoutes(services.lexicalEntryRepository)
 
         // Flashcard routes (protected)
         flashcardRoutes()

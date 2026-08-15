@@ -60,6 +60,19 @@ class SavedWordRepository {
     }
 
     /**
+     * Writes back wording filled in from the corpus.
+     *
+     * Only ever called with values that were blank on the row, so this cannot overwrite
+     * anything a user put there.
+     */
+    suspend fun updateContent(id: Int, translation: String?, definition: String?): Boolean = dbQuery {
+        SavedWords.update({ SavedWords.id eq id }) {
+            it[SavedWords.translation] = translation?.take(500)
+            it[SavedWords.definition] = definition
+        } > 0
+    }
+
+    /**
      * Delete a saved word
      */
     suspend fun delete(userId: Int, word: String): Boolean = dbQuery {
