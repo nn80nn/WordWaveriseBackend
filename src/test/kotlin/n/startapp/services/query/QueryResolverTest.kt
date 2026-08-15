@@ -216,6 +216,68 @@ class QueryResolverTest {
     }
 
     @Test
+    fun `a real word outranks its commoner neighbour, which becomes a fallback`() = runBlocking {
+        // Reported from the field: searching "missive" returned the article for "massive".
+        // The margin guard could not stop it — 18.2 is 66x 0.27, past the 50x bar — because no
+        // ratio separates a rare word from a typo. So a word that exists is simply never
+        // overridden; the neighbour rides along and only [LookupService] may use it, and only
+        // once every dictionary has confirmed it has no entry for what was typed.
+        val out = resolver(
+            known = setOf("missive", "massive", "missile"),
+            suggestions = mapOf("missive" to listOf("massive", "missile")),
+            frequencies = mapOf("missive" to 0.274, "massive" to 18.235, "missile" to 5.705)
+        ).resolve("missive")
+
+        assertEquals(QueryKind.WORD, out.kind)
+        assertEquals("missive", out.lemma)
+        assertFalse(out.correctionApplied)
+        assertEquals("massive", out.fallback?.form, "still offered, no longer imposed")
+        assertEquals(QueryKind.MISSPELLING, out.fallback?.kind)
+    }
+
+    @Test
+    fun `a rare word is not lemmatised into a shorter word it merely ends like`() = runBlocking {
+        // "waver" is not an inflection of "wave", but the -er rule cannot tell, and the word is
+        // too rare to have stopped at the common-word rung. Existing as typed is what saves it.
+        val out = resolver(
+            known = setOf("waver", "wave"),
+            frequencies = mapOf("waver" to 0.51, "wave" to 42.0)
+        ).resolve("waver")
+
+        assertEquals(QueryKind.WORD, out.kind)
+        assertEquals("waver", out.lemma)
+        assertEquals("wave", out.fallback?.form)
+        assertEquals(QueryKind.INFLECTION, out.fallback?.kind, "so the notice reads as a form, not a typo")
+    }
+
+    @Test
+    fun `a typo the corpus has seen is still handed a correction to fall back on`() = runBlocking {
+        // "teh" is in the frequency corpus (0.40/M) and commoner there than plenty of real
+        // words, so it now resolves to itself. What makes it a typo is that no dictionary has
+        // an entry — a question only the lookup can answer, so all the resolver owes is a
+        // usable second guess.
+        val out = resolver(
+            known = setOf("teh", "the"),
+            suggestions = mapOf("teh" to listOf("the")),
+            frequencies = mapOf("teh" to 0.405, "the" to 56271.0)
+        ).resolve("teh")
+
+        assertEquals("teh", out.lemma)
+        assertEquals("the", out.fallback?.form)
+    }
+
+    @Test
+    fun `a word with no plausible neighbour carries no fallback at all`() = runBlocking {
+        val out = resolver(
+            known = setOf("serendipity"),
+            frequencies = mapOf("serendipity" to 0.29)
+        ).resolve("serendipity")
+
+        assertEquals(QueryKind.WORD, out.kind)
+        assertNull(out.fallback, "nothing to second-guess, so no notice")
+    }
+
+    @Test
     fun `a correction further than two edits away is not applied`() = runBlocking {
         val llm = CountingLlm()
         val out = resolver(suggestions = mapOf("qwrtplk" to listOf("waterlike")), llm = llm).resolve("qwrtplk")

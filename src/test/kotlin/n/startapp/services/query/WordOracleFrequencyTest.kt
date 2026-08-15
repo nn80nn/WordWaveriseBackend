@@ -127,22 +127,27 @@ class WordOracleFrequencyTest {
     }
 
     /**
-     * The other side of the same coin, and the reason existence alone cannot end the ladder:
-     * "teh" is *commoner* than "intertwine". Both are rare, only one is a word, and the only
-     * thing that tells them apart is what each sits next to — "the" buries "teh" by five orders
-     * of magnitude, while "intertwined" is barely above "intertwine".
+     * The other side of the same coin, and the reason the resolver cannot finish this job:
+     * "teh" is *commoner* than "intertwine". Both are rare, only one is a word, and no
+     * frequency comparison decides it — the margin that would correct "teh" also corrects
+     * "missive" into "massive".
+     *
+     * So the resolver stops at a second guess and the lookup settles it, by asking the one
+     * question frequency cannot answer: does any dictionary have an entry for this? "teh" has
+     * none, and only then does it become "the".
      */
     @Test
-    fun `a rare string is still corrected when its neighbour dwarfs it`() = runBlocking {
+    fun `a rare string keeps its own lemma but carries the correction as a fallback`() = runBlocking {
         val resolver = QueryResolver(
             oracle = FrequencyOracle(mapOf("teh" to 0.404922, "the" to 56271.0))
         )
 
         val out = resolver.resolve("teh")
 
-        assertEquals(QueryKind.MISSPELLING, out.kind)
-        assertEquals("the", out.lemma)
-        assertTrue(out.correctionApplied)
+        assertEquals(QueryKind.WORD, out.kind)
+        assertEquals("teh", out.lemma)
+        assertEquals("the", out.fallback?.form)
+        assertEquals(QueryKind.MISSPELLING, out.fallback?.kind)
     }
 
     @Test
