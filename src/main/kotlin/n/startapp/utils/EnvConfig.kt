@@ -146,6 +146,14 @@ object EnvConfig {
     val resendApiKey: String get() = get("RESEND_API_KEY", "")
     val resendFromEmail: String get() = get("RESEND_FROM_EMAIL", "noreply@wordwaverise.com")
 
+    // ── Public site ─────────────────────────────────────────────────────────
+    /**
+     * Origin the crawlable pages live under. The HTML this backend renders is served to users
+     * through the site's nginx, so every canonical, sitemap and internal link must name the site
+     * — not `backend.wordwaverise.com`, which would split the same page across two hosts.
+     */
+    val siteUrl: String get() = get("SITE_URL", "https://wordwaverise.com").trimEnd('/')
+
     // Account deletion grace period
     val accountDeletionGraceDays: Int get() = getInt("ACCOUNT_DELETION_GRACE_DAYS", 30)
 }

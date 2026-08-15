@@ -22,11 +22,15 @@ import org.jetbrains.exposed.sql.avg
 import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.sum
 import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
+
+/** A headword the corpus can already answer for, with the timestamp of its newest article. */
+data class CorpusLemma(val lemma: String, val updatedAt: Long)
 
 /** An entry plus the raw aggregate it was built from. */
 data class StoredEntry(
@@ -192,6 +196,38 @@ class LexicalEntryRepository {
 
     suspend fun deleteByLemma(lemma: String): Int = dbQuery {
         LexicalEntries.deleteWhere { LexicalEntries.lemma eq lemma.trim().lowercase() }
+    }
+
+    // ── Public corpus index (crawlable pages) ───────────────────────────────
+
+    /**
+     * Every headword that has a page, newest write per lemma.
+     *
+     * Deliberately reads the table rather than the word list: the sitemap must promise only
+     * URLs that render, and an article that has not been generated yet renders as a 404.
+     * A lemma appears under several cache keys as versions move, so the rows are collapsed
+     * on lemma and the newest `updated_at` becomes the `<lastmod>`.
+     */
+    suspend fun publishedLemmas(): List<CorpusLemma> = dbQuery {
+        val newest = LexicalEntries.updatedAt.max()
+        LexicalEntries
+            .select(LexicalEntries.lemma, newest)
+            .groupBy(LexicalEntries.lemma)
+            .orderBy(LexicalEntries.lemma to SortOrder.ASC)
+            .map { CorpusLemma(it[LexicalEntries.lemma], it[newest] ?: 0L) }
+    }
+
+    /** Headwords under one initial, for the A–Z index that gives crawlers a path to them. */
+    suspend fun lemmasStartingWith(prefix: String, limit: Int = 5000): List<String> = dbQuery {
+        val needle = prefix.trim().lowercase()
+        if (needle.isBlank()) return@dbQuery emptyList()
+        LexicalEntries
+            .select(LexicalEntries.lemma)
+            .where { LexicalEntries.lemma like "$needle%" }
+            .withDistinct()
+            .orderBy(LexicalEntries.lemma to SortOrder.ASC)
+            .limit(limit)
+            .map { it[LexicalEntries.lemma] }
     }
 
     // ── Admin views ─────────────────────────────────────────────────────────

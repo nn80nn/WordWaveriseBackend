@@ -6,6 +6,7 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
 import n.startapp.exceptions.ApiException
 import n.startapp.models.ApiResponse
+import n.startapp.routes.SeoHtmlResponse
 import org.slf4j.LoggerFactory
 
 fun Application.configureExceptionHandling() {
@@ -35,6 +36,9 @@ fun Application.configureExceptionHandling() {
 
         // Handle 404 Not Found
         status(HttpStatusCode.NotFound) { call, status ->
+            // A missing word page answers with its own HTML and its own 404; replacing that
+            // body with the JSON envelope would hand crawlers an API error instead of a page.
+            if (call.attributes.contains(SeoHtmlResponse)) return@status
             call.respond(
                 status,
                 ApiResponse.error<Unit>(

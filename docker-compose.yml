@@ -45,6 +45,7 @@ services:
       - ACCOUNT_DELETION_GRACE_DAYS=${ACCOUNT_DELETION_GRACE_DAYS}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - ADMIN_SECRET=${ADMIN_SECRET}
+      - SITE_URL=${SITE_URL}
     depends_on:
       db:
         condition: service_healthy

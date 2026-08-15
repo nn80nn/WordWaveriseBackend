@@ -44,6 +44,17 @@ data class ResolvedQuery(
     val surface: String,
     val correctionApplied: Boolean = false,
     val correctedFrom: String? = null,
+    /**
+     * What to look up if no dictionary turns out to have [lemma] at all.
+     *
+     * Set when the typed word is real but has a near neighbour a speller would have put in its
+     * place. Deferring the substitution until the dictionary comes back empty is what lets both
+     * cases work: a rare word ("missive", 0.27 per million) keeps its own article instead of
+     * being hijacked by a commoner one ("massive", 18.2), while a typo that merely appears in a
+     * frequency corpus ("teh", 0.40) still lands on the word that was meant. Frequency alone
+     * cannot tell those two apart — having an entry can.
+     */
+    val fallback: QueryAlternative? = null,
     val alternatives: List<QueryAlternative> = emptyList(),
     val confidence: Double = 1.0,
     /** "heuristic" | "cache" | "datamuse" | "llm" — for debugging and cost accounting. */

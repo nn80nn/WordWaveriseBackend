@@ -25,6 +25,7 @@ import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.contextRoutes
 import n.startapp.routes.lookupRoutes
 import n.startapp.routes.savedWordsRoutes
+import n.startapp.routes.seoRoutes
 import n.startapp.routes.testingRoutes
 import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
@@ -105,6 +106,10 @@ fun Application.configureRouting(services: ServiceRegistry) {
                 call.respond(ApiResponse.success(result))
             }
         }
+
+        // Crawlable HTML: /word/{lemma}, the A-Z index and the corpus sitemap.
+        // Reads the corpus only — a crawler can never trigger an annotation from here.
+        seoRoutes(services.lexicalEntryRepository)
 
         // v2 lookup: LLM-annotated article, with the raw aggregate alongside it
         lookupRoutes(services.lookupService, services.ruEnTranslationService, services.warmupService)
