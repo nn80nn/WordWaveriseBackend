@@ -195,7 +195,12 @@ class ExerciseService(
     private suspend fun pool(userId: Int, categoryId: Int?, scope: ExerciseScope): List<PracticeWord> {
         val cards = when (scope) {
             ExerciseScope.DUE -> flashcards.getDueFlashcards(userId, categoryId)
-            else -> flashcards.getAllByUser(userId, categoryId)
+            ExerciseScope.FLASHCARDS -> flashcards.getAllByUser(userId, categoryId)
+            // A word's folder and its card's folder can differ — the card may have been moved,
+            // or created before folders existed. Filtering the lookup table by folder too would
+            // silently drop the link, and practice in that folder would stop counting towards
+            // the schedule of the very cards it is about.
+            ExerciseScope.SAVED -> flashcards.getAllByUser(userId, null)
         }
         val cardByWord = cards.associateBy { it.word.trim().lowercase() }
 
