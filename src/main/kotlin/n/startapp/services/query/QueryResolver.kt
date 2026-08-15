@@ -138,59 +138,52 @@ class QueryResolver(
         // on mere existence has to be wrong in one direction or the other — either every typo
         // becomes a headword or every rare word gets hijacked by its commoner neighbour.
         //
-        // So only words too common to be typos stop here. Everything below the line is carried
-        // to the rungs that weigh it against the specific alternatives, and comes back as a word
-        // at 4f if none of them wins. Unknown frequency counts as trustworthy: an oracle that
-        // cannot measure is no grounds for second-guessing the user.
+        // So only words too common to be worth a second thought stop here, skipping the search
+        // for alternatives entirely. A rarer word still comes back as itself below — it just
+        // pays for the neighbour to be looked up and carried along as a fallback. Unknown
+        // frequency counts as trustworthy: an oracle that cannot measure is no grounds for
+        // second-guessing the user.
         val existsAsTyped = oracle?.exists(normalized) == true
         val typedFrequency = if (existsAsTyped) oracle?.frequency(normalized) else null
         if (existsAsTyped && (typedFrequency == null || typedFrequency >= COMMON_ENOUGH_TO_TRUST)) {
             return base(rawInput, normalized, "en", QueryKind.WORD, normalized).copy(resolvedBy = "datamuse")
         }
 
-        // 4b. Regular inflection whose stem is a real word.
-        for (candidate in MorphologyHeuristics.candidates(normalized)) {
-            val confirmed = knownForm?.invoke(candidate) != null || oracle?.exists(candidate) == true
-            if (confirmed) {
-                return base(rawInput, normalized, "en", QueryKind.INFLECTION, candidate)
-                    .copy(resolvedBy = "morphology")
-            }
-        }
+        // 4b-4d. The deterministic alternatives to what was typed, best first.
+        val alternative = findAlternative(normalized, typedFrequency)
 
-        // 4c. Swapped adjacent letters, which the spelling provider cannot reach on its own.
-        // Checked before its suggestions because those confidently offer a same-distance
-        // substitution ("relieve") for what is really a transposition ("receive").
-        for (candidate in MorphologyHeuristics.transpositions(normalized)) {
-            val confirmed = knownForm?.invoke(candidate) != null || oracle?.exists(candidate) == true
-            if (confirmed && worthOverriding(normalized, typedFrequency, candidate)) {
-                return base(rawInput, normalized, "en", QueryKind.MISSPELLING, candidate).copy(
-                    correctionApplied = true,
-                    correctedFrom = normalized,
-                    resolvedBy = "transposition"
-                )
-            }
-        }
-
-        // 4d. Spelling correction from the provider. Ranked by edit distance first: it orders by
-        // frequency, which alone would prefer a common word over the one actually meant.
-        val suggestions = oracle?.spellingSuggestions(normalized, 8).orEmpty()
-        val best = suggestions
-            .filter { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
-            .minByOrNull { editDistance(normalized, it) }
-        if (best != null && worthOverriding(normalized, typedFrequency, best)) {
-            return base(rawInput, normalized, "en", QueryKind.MISSPELLING, best).copy(
-                correctionApplied = true,
-                correctedFrom = normalized,
-                alternatives = suggestions.filter { it != best }.take(4).map { QueryAlternative(it) },
+        // Whatever the ladder found only *replaces* the query when the query is not a word.
+        //
+        // Overriding a real word is the one failure the user can neither see nor undo: they
+        // typed "missive", got the article for "massive", and nothing on the screen is the word
+        // they asked about. It happened because the frequency margin at 4d is the only guard,
+        // and a rare word beside a common one clears it by accident — "massive" (18.2 per
+        // million) is 66x "missive" (0.27), over the 50x bar meant to catch typos.
+        //
+        // So a word that exists keeps its own article, and the neighbour is demoted to a
+        // fallback: LookupService swaps it in only after every dictionary has come back empty.
+        // That check is the thing frequency could never be — it asks whether the string has an
+        // entry, not merely whether some corpus has seen it. "teh" is still corrected, not
+        // because it is rarer than "the" but because no dictionary has heard of it.
+        //
+        // This is also what keeps the whole B2/C1 band off the model: rare words end here by
+        // design, and an LLM call for each would be the cost of the rung above being honest.
+        if (existsAsTyped) {
+            return base(rawInput, normalized, "en", QueryKind.WORD, normalized).copy(
+                fallback = alternative?.let { QueryAlternative(it.lemma, it.kind) },
+                alternatives = alternative?.others.orEmpty().map { QueryAlternative(it) },
                 resolvedBy = "datamuse"
             )
         }
 
-        // 4f. Rare, but real, and nothing beat it. Take the user at their word — and note that
-        // this is what keeps the whole B2/C1 band off the model: those words reach here by
-        // design, and an LLM call for each would be the cost of the rung above being honest.
-        if (existsAsTyped) {
-            return base(rawInput, normalized, "en", QueryKind.WORD, normalized).copy(resolvedBy = "datamuse")
+        if (alternative != null) {
+            val corrected = alternative.kind == QueryKind.MISSPELLING
+            return base(rawInput, normalized, "en", alternative.kind, alternative.lemma).copy(
+                correctionApplied = corrected,
+                correctedFrom = if (corrected) normalized else null,
+                alternatives = alternative.others.map { QueryAlternative(it) },
+                resolvedBy = alternative.resolvedBy
+            )
         }
 
         // 4e. Latin typed in an English layout when Russian was meant. Last before the model,
@@ -208,6 +201,55 @@ class QueryResolver(
         // 5. Everything deterministic missed: proper nouns, neologisms, heavy garbling.
         return resolveWithLlm(rawInput, normalized)
             ?: base(rawInput, normalized, "en", QueryKind.WORD, normalized)
+    }
+
+    /** A deterministic reading of the input other than the literal one. */
+    private data class Alternative(
+        val lemma: String,
+        val kind: QueryKind,
+        val resolvedBy: String,
+        /** Also-rans, worth showing as "did you mean" whichever way the caller decides. */
+        val others: List<String> = emptyList()
+    )
+
+    /**
+     * The best alternative reading of [normalized], or null if nothing plausible is close.
+     *
+     * Finding one and acting on one are separate decisions on purpose: the same three rungs
+     * answer "what did they mean instead" for a string that is not a word, and "what should we
+     * try if this word turns out to have no entry" for one that is.
+     */
+    private suspend fun findAlternative(normalized: String, typedFrequency: Double?): Alternative? {
+        // 4b. Regular inflection whose stem is a real word.
+        for (candidate in MorphologyHeuristics.candidates(normalized)) {
+            val confirmed = knownForm?.invoke(candidate) != null || oracle?.exists(candidate) == true
+            if (confirmed) return Alternative(candidate, QueryKind.INFLECTION, "morphology")
+        }
+
+        // 4c. Swapped adjacent letters, which the spelling provider cannot reach on its own.
+        // Checked before its suggestions because those confidently offer a same-distance
+        // substitution ("relieve") for what is really a transposition ("receive").
+        for (candidate in MorphologyHeuristics.transpositions(normalized)) {
+            val confirmed = knownForm?.invoke(candidate) != null || oracle?.exists(candidate) == true
+            if (confirmed && worthOverriding(normalized, typedFrequency, candidate)) {
+                return Alternative(candidate, QueryKind.MISSPELLING, "transposition")
+            }
+        }
+
+        // 4d. Spelling correction from the provider. Ranked by edit distance first: it orders by
+        // frequency, which alone would prefer a common word over the one actually meant.
+        val suggestions = oracle?.spellingSuggestions(normalized, 8).orEmpty()
+        val best = suggestions
+            .filter { editDistance(normalized, it) <= MAX_EDIT_DISTANCE }
+            .minByOrNull { editDistance(normalized, it) }
+        if (best != null && worthOverriding(normalized, typedFrequency, best)) {
+            return Alternative(
+                best, QueryKind.MISSPELLING, "datamuse",
+                others = suggestions.filter { it != best }.take(4)
+            )
+        }
+
+        return null
     }
 
     /**

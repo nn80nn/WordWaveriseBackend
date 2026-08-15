@@ -61,6 +61,17 @@ class WordPageRendererTest {
     }
 
     @Test
+    fun `the breadcrumb trail is also declared as structured data`() {
+        val html = WordPageRenderer.wordPage(entry())
+
+        assertContains(html, "BreadcrumbList")
+        assertContains(html, "https://wordwaverise.com/words/r")
+        assertContains(html, "https://wordwaverise.com/word/resolve")
+        // Two separate ld+json blocks, not one merged object.
+        assertEquals(2, Regex("application/ld").findAll(html).count())
+    }
+
+    @Test
     fun `synonyms become links so a crawler can walk the corpus`() {
         val html = WordPageRenderer.wordPage(entry())
 

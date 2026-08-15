@@ -73,7 +73,7 @@ object WordPageRenderer {
             title = title,
             description = description,
             canonical = "${EnvConfig.siteUrl}${wordPath(lemma)}",
-            extraHead = jsonLd(wordJsonLd(entry, description)),
+            extraHead = jsonLd(wordJsonLd(entry, description)) + jsonLd(breadcrumbJsonLd(entry.lemma)),
             body = body
         )
     }
@@ -382,6 +382,28 @@ object WordPageRenderer {
                         put("text", ex.en)
                     })
                 }
+            }
+        }
+    }
+
+    /** The visible crumbs again, in the form search engines render as a trail under the result. */
+    private fun breadcrumbJsonLd(lemma: String): JsonObject = buildJsonObject {
+        val site = EnvConfig.siteUrl
+        val initial = lemma.take(1)
+        put("@context", "https://schema.org")
+        put("@type", "BreadcrumbList")
+        putJsonArray("itemListElement") {
+            listOf(
+                Triple(1, "Словарь", "$site/words"),
+                Triple(2, initial.uppercase(), "$site/words/${initial.lowercase()}"),
+                Triple(3, lemma, "$site${wordPath(lemma)}")
+            ).forEach { (position, name, url) ->
+                add(buildJsonObject {
+                    put("@type", "ListItem")
+                    put("position", position)
+                    put("name", name)
+                    put("item", url)
+                })
             }
         }
     }

@@ -146,10 +146,41 @@ class LookupService(
         val detail: String? = null
     )
 
+    /**
+     * Resolves the query, then looks it up — retrying once on the resolver's fallback.
+     *
+     * The retry is what lets the resolver stop overriding real words. It hands back what the
+     * user typed plus, where a speller had an opinion, the word it would have substituted; that
+     * substitution now happens only here, after every dictionary has said it has no entry for
+     * the literal query. "missive" has an entry and is served as itself; "teh" has none, so the
+     * second pass answers with "the". Frequency could never draw that line — the populations
+     * overlap — but having an article is exactly the evidence needed.
+     */
     suspend fun lookup(query: String): LookupResponse {
         if (query.isBlank()) throw BadRequestException("Query parameter 'query' cannot be empty")
 
         val resolution = queryResolver.resolve(query)
+        return try {
+            lookupResolved(resolution)
+        } catch (e: NotFoundException) {
+            val fallback = resolution.fallback ?: throw e
+            logger.info(
+                "No dictionary entry for '{}'; retrying as '{}'", resolution.normalized, fallback.form
+            )
+            lookupResolved(
+                resolution.copy(
+                    kind = fallback.kind,
+                    lemma = fallback.form,
+                    correctionApplied = fallback.kind == QueryKind.MISSPELLING,
+                    correctedFrom = resolution.normalized
+                        .takeIf { fallback.kind == QueryKind.MISSPELLING },
+                    fallback = null
+                )
+            )
+        }
+    }
+
+    private suspend fun lookupResolved(resolution: ResolvedQuery): LookupResponse {
         val lemma = resolution.lemma
         val notice = noticeFor(resolution)
 
@@ -419,6 +450,14 @@ class LookupService(
                     textRu = "«${resolution.normalized}» — форма слова «$lemma».",
                     originalQuery = resolution.normalized
                 )
+
+            // The article below is for what was typed; the neighbour is merely offered. No
+            // `originalQuery`, because there is nothing to undo — the clients turn that field
+            // into an "Искать точно" button, and here the exact search is already what is shown.
+            resolution.fallback != null -> LookupNotice(
+                type = "did_you_mean",
+                textRu = "Возможно, вы искали «${resolution.fallback.form}»?"
+            )
 
             else -> null
         }
