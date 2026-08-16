@@ -24,7 +24,9 @@ fun Route.lookupRoutes(
         get("/lookup") {
             val query = call.request.queryParameters["query"]
                 ?: throw BadRequestException("Query parameter 'query' is required")
-            call.respond(ApiResponse.success(lookupService.lookup(query)))
+            // exact=true is the user overriding the resolver: look it up as typed.
+            val exact = call.request.queryParameters["exact"]?.lowercase() == "true"
+            call.respond(ApiResponse.success(lookupService.lookup(query, exact = exact)))
         }
     }
 

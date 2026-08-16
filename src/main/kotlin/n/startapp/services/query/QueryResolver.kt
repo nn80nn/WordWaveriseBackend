@@ -340,6 +340,36 @@ class QueryResolver(
         )
     }
 
+    /**
+     * The query as typed, with nothing substituted for it.
+     *
+     * [resolve] exists to be helpful, and every rung of its ladder is a place it can be helpful
+     * about the wrong thing — a typo correction, a lemma, a phrase the corpus already knows.
+     * Until now the user had no way to say "no, that one": the clients' «Искать точно» button
+     * re-issued the same query through the same ladder and got the same answer back.
+     *
+     * This is that way out. Normalisation only — case, whitespace, wrapping quotes — and then
+     * straight to the dictionary under the characters that were typed. Nothing here consults
+     * the oracle, the corpus or the model, so there is nothing that can decide otherwise.
+     */
+    fun resolveExact(rawInput: String): ResolvedQuery {
+        val normalized = normalize(rawInput)
+        if (normalized.isBlank()) return base(rawInput, "", "unknown", QueryKind.UNKNOWN, null)
+
+        val tokens = normalized.split(' ').filter { it.isNotBlank() }
+        val isRussian = normalized.any { it in 'Ѐ'..'ӿ' }
+        val kind = when {
+            isRussian && tokens.size == 1 -> QueryKind.RU_WORD
+            isRussian -> QueryKind.RU_PHRASE
+            tokens.size == 1 -> QueryKind.WORD
+            // Deliberately never SENTENCE: asking for this exact string is asking for it to be
+            // looked up, and routing it to the context pipeline would be another substitution.
+            else -> QueryKind.PHRASE
+        }
+        return base(rawInput, normalized, if (isRussian) "ru" else "en", kind, normalized)
+            .copy(resolvedBy = "exact")
+    }
+
     private fun base(
         raw: String, normalized: String, language: String, kind: QueryKind, lemma: String?
     ) = ResolvedQuery(

@@ -157,8 +157,15 @@ class LookupService(
      * second pass answers with "the". Frequency could never draw that line — the populations
      * overlap — but having an article is exactly the evidence needed.
      */
-    suspend fun lookup(query: String): LookupResponse {
+    /**
+     * @param exact look the query up as typed, with no correction, lemmatisation or fallback.
+     *   This is what «Искать точно» sends, so it must not second-guess the user in any way —
+     *   including the fallback retry below, which is a substitution made after the fact.
+     */
+    suspend fun lookup(query: String, exact: Boolean = false): LookupResponse {
         if (query.isBlank()) throw BadRequestException("Query parameter 'query' cannot be empty")
+
+        if (exact) return lookupResolved(queryResolver.resolveExact(query))
 
         val resolution = queryResolver.resolve(query)
         return try {

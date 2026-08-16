@@ -54,6 +54,63 @@ class QueryResolverTest {
         llmCache = null
     )
 
+    // ── «Искать точно»: the user overriding the resolver ────────────────────
+
+    @Test
+    fun `exact search keeps the query even when the corpus files it under something else`() {
+        // The bug this exists for: "take" came back as the phrasal verb "take up", and pressing
+        // «Искать точно» re-ran the same ladder and produced the same answer.
+        val r = resolver(corpus = mapOf("take" to "take up")).resolveExact("take")
+
+        assertEquals("take", r.lemma)
+        assertEquals(QueryKind.WORD, r.kind)
+        assertEquals("exact", r.resolvedBy)
+    }
+
+    @Test
+    fun `exact search never corrects spelling and never offers a fallback`() {
+        val r = resolver(
+            known = setOf("receive"),
+            suggestions = mapOf("recieve" to listOf("receive")),
+            frequencies = mapOf("receive" to 40.0, "recieve" to 0.3)
+        ).resolveExact("recieve")
+
+        assertEquals("recieve", r.lemma)
+        assertFalse(r.correctionApplied)
+        assertNull(r.fallback)
+        assertNull(r.correctedFrom)
+    }
+
+    @Test
+    fun `exact search still normalises case, quotes and whitespace`() {
+        // Exact means "do not substitute another word", not "do not tidy the input": case and
+        // spacing are not characters the dictionary is filed under.
+        assertEquals("take up", resolver().resolveExact("  Take   Up  ").lemma)
+        assertEquals("take up", resolver().resolveExact("\"take up\"").lemma)
+        assertEquals(QueryKind.PHRASE, resolver().resolveExact("Take Up").kind)
+    }
+
+    @Test
+    fun `exact search consults nothing that could change its mind`() {
+        val oracle = FakeOracle(known = setOf("take"))
+        val llm = CountingLlm()
+        val resolver = QueryResolver(oracle = oracle, knownForm = { "take up" }, llm = llm, llmCache = null)
+
+        resolver.resolveExact("take")
+
+        assertEquals(0, oracle.existsCalls)
+        assertEquals(0, llm.calls)
+    }
+
+    @Test
+    fun `exact search sends a long string to the dictionary rather than the context pipeline`() {
+        // Routing it to SENTENCE would be one more substitution, which is the thing being opted out of.
+        val r = resolver().resolveExact("a bird in the hand is worth two")
+
+        assertEquals(QueryKind.PHRASE, r.kind)
+        assertEquals("a bird in the hand is worth two", r.lemma)
+    }
+
     // ── Rungs that must never reach the model ───────────────────────────────
 
     @Test

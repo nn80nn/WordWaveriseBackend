@@ -142,11 +142,9 @@ class LexicalEntryRepository {
         LexicalEntries
             .selectAll()
             .where { LexicalEntries.formsIndex like "%$needle%" }
-            .limit(20)
-            .firstOrNull { row ->
-                // `like` is a coarse prefilter; confirm on a whole-token match.
-                row[LexicalEntries.formsIndex].split(' ').any { it == needle }
-            }
+            .limit(50)
+            // `like` is a coarse prefilter; the real decision is made in Kotlin.
+            .firstOrNull { formsContain(it[LexicalEntries.lemma], it[LexicalEntries.formsIndex], needle) }
             ?.get(LexicalEntries.lemma)
     }
 
@@ -336,6 +334,27 @@ class LexicalEntryRepository {
     }
 
     companion object {
+        /**
+         * Whether an entry files [needle] as one of its own forms.
+         *
+         * The index joins every form with a space, so a multi-word headword is stored as tokens
+         * indistinguishable from a list of one-word forms — "take up" indexes as
+         * `take up took up taking up` — and matching a bare token let the query "take" come back
+         * as the phrasal verb. A form always has as many words as the headword it belongs to,
+         * which is what tells the two apart; the match is then made on windows of that width.
+         */
+        internal fun formsContain(lemma: String, formsIndex: String, needle: String): Boolean {
+            val width = needle.split(' ').filter { it.isNotBlank() }.size
+            if (width == 0) return false
+            if (lemma.split(' ').filter { it.isNotBlank() }.size != width) return false
+
+            return formsIndex
+                .split(' ')
+                .filter { it.isNotBlank() }
+                .windowed(width, 1, partialWindows = false)
+                .any { it.joinToString(" ") == needle }
+        }
+
         fun cacheKey(lemma: String, kind: String, promptVersion: Int, model: String, lang: String = "en"): String =
             "$lang|${lemma.trim().lowercase()}|$kind|s$LEXICAL_SCHEMA_VERSION|p$promptVersion|$model"
 
