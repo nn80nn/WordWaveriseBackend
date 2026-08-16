@@ -29,4 +29,19 @@ class BulkFillTest {
     fun `both loose means nothing to do`() {
         assertEquals(BulkFill.Action.SKIP, BulkFill.actionFor(cardCategory = null, wordCategory = null))
     }
+
+    // ── Тот же вопрос в другой момент: слово переложили в папку ──────────────
+
+    @Test
+    fun `a card outside folders follows its word when the word is filed`() {
+        // Ровно та дыра, из-за которой папка выглядела пустой, а «создать карточки из папки»
+        // отвечало «они уже есть»: карточка оставалась в общих, потому что раскладывали слово.
+        assertEquals(BulkFill.Action.ADOPT, BulkFill.actionFor(cardCategory = null, wordCategory = 4))
+    }
+
+    @Test
+    fun `taking a word out of every folder leaves its card where it is`() {
+        // Слово ушло в общие — но карточка лежит в папке, куда её положили руками.
+        assertEquals(BulkFill.Action.SKIP, BulkFill.actionFor(cardCategory = 4, wordCategory = null))
+    }
 }

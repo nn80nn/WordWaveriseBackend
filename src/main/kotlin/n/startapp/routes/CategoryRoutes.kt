@@ -19,11 +19,15 @@ import n.startapp.utils.EnvConfig
 import n.startapp.models.auth.SetWordCategoryRequest
 import n.startapp.models.auth.UpdateCategoryRequest
 import n.startapp.repositories.CategoryRepository
+import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.SavedWordRepository
+
+private val categoryLogger = org.slf4j.LoggerFactory.getLogger("CategoryRoutes")
 
 fun Route.categoryRoutes() {
     val categoryRepository = CategoryRepository()
     val savedWordRepository = SavedWordRepository()
+    val flashcardRepository = FlashcardRepository()
 
     authenticate("auth-jwt") {
         route("/api/categories") {
@@ -125,6 +129,13 @@ fun Route.categoryRoutes() {
 
                 val updated = savedWordRepository.setCategory(userId, word, request.categoryId)
                 if (!updated) throw NotFoundException("Saved word not found")
+
+                // Карточка едет за словом, если лежала вне папок. Иначе папка выглядит пустой,
+                // а «создать карточки из папки» отвечает «они уже есть» — и то и другое правда,
+                // и вместе они бесполезны.
+                runCatching { flashcardRepository.followWordIntoFolder(userId, word, request.categoryId) }
+                    .onFailure { categoryLogger.warn("Card did not follow '$word': ${it.message}") }
+
                 call.respond(ApiResponse.success("Category updated"))
             }
         }

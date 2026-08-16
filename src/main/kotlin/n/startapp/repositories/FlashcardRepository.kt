@@ -141,6 +141,35 @@ class FlashcardRepository {
         } > 0
     }
 
+    /**
+     * Takes a loose card into the folder its word just moved to.
+     *
+     * Filing a word and filing its card were separate acts, so a word moved into a folder left
+     * its card behind in no folder at all. The folder then looked empty, and "создать карточки
+     * из папки" answered "карточки для этих слов уже есть" — technically true and useless.
+     *
+     * ⚠️ Only a *loose* card follows, which is [BulkFill]'s rule applied at the moment the word
+     * moves rather than only when a folder is bulk-filled. A card sitting in another real folder
+     * was put there by somebody, and filing a word has no business emptying a different folder.
+     *
+     * @return true when a card actually moved.
+     */
+    suspend fun followWordIntoFolder(userId: Int, word: String, categoryId: Int?): Boolean = dbQuery {
+        val key = word.trim().lowercase()
+        val row = Flashcards.select {
+            (Flashcards.userId eq userId) and (Flashcards.word.lowerCase() eq key)
+        }.firstOrNull() ?: return@dbQuery false
+
+        if (BulkFill.actionFor(row[Flashcards.categoryId], categoryId) != BulkFill.Action.ADOPT) {
+            return@dbQuery false
+        }
+
+        Flashcards.update({ Flashcards.id eq row[Flashcards.id] }) {
+            it[Flashcards.categoryId] = categoryId
+            it[updatedAt] = Instant.now()
+        } > 0
+    }
+
     /** Moves a card between folders without touching its schedule or its wording. */
     suspend fun setCategory(cardId: Int, userId: Int, categoryId: Int?): Boolean = dbQuery {
         Flashcards.update({ (Flashcards.id eq cardId) and (Flashcards.userId eq userId) }) {
