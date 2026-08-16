@@ -91,6 +91,14 @@ class QueryResolverTest {
     }
 
     @Test
+    fun `an exact resolution is marked as such for everything downstream`() {
+        // The resolver is not the last place a word can be swapped: the dictionary's own gloss
+        // redirects too, and it reads this flag rather than a parameter of the original call.
+        assertTrue(resolver().resolveExact("recieve").isExact)
+        assertFalse(runBlocking { resolver(known = setOf("receive")).resolve("receive") }.isExact)
+    }
+
+    @Test
     fun `quotes and sentence punctuation come off in either nesting order`() {
         val r = resolver()
 

@@ -272,8 +272,11 @@ class LookupService(
         // is not the same as being a headword, and this is the one reading of the evidence that
         // is not a guess: the dictionary names the target itself. Checked before annotation so a
         // typo never costs a model call.
+        // …unless the user has already said they meant this string. «Искать точно» exists to
+        // overrule exactly this kind of correction, and the gloss is still a correction even
+        // though the dictionary rather than a speller proposed it.
         SpellingGloss.redirectTarget(aggregate.response.definitions.map { it.definition })
-            ?.takeIf { !it.equals(lemma, true) && resolution.correctedFrom == null }
+            ?.takeIf { !it.equals(lemma, true) && resolution.correctedFrom == null && !resolution.isExact }
             ?.let { target ->
                 logger.info("'{}' is glossed only as a pointer to '{}'", lemma, target)
                 return lookupResolved(
@@ -330,6 +333,15 @@ class LookupService(
                     if (result.entry.degraded) {
                         logger.warn("Annotation degraded for '{}': {} — {}", lemma, result.reason, result.detail)
                         degraded.put(cacheKey, outcome)
+                    } else if (resolution.isExact) {
+                        // An exact lookup is one person overruling the resolver for one query.
+                        // Persisting its article would turn that override into everyone's
+                        // default: rung 3 resolves a form by looking for an entry under that
+                        // headword, so a stored article for "recieve" switches the correction
+                        // off for every later user — permanently, these rows having no TTL.
+                        // In memory for the polls that follow, and no further.
+                        hot.put(cacheKey, StoredEntry(result.entry, full.response, sourceFingerprint = ""))
+                        logger.info("Exact lookup for '{}' answered without writing to the corpus", lemma)
                     } else {
                         // Store the full aggregate too: it is what the sources view renders on a
                         // warm hit, and it is richer than the quick one the response carried.

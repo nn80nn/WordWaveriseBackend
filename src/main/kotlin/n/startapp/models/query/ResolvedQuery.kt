@@ -57,6 +57,16 @@ data class ResolvedQuery(
     val fallback: QueryAlternative? = null,
     val alternatives: List<QueryAlternative> = emptyList(),
     val confidence: Double = 1.0,
-    /** "heuristic" | "cache" | "datamuse" | "llm" — for debugging and cost accounting. */
+    /** "heuristic" | "cache" | "datamuse" | "llm" | "exact" — for debugging and cost accounting. */
     val resolvedBy: String = "heuristic"
-)
+) {
+    /**
+     * The user asked for these characters and no others.
+     *
+     * Set by `QueryResolver.resolveExact`, and read downstream by everything that would
+     * otherwise swap the word out. The resolver is not the last place a substitution can
+     * happen — the dictionary's own gloss can redirect a query too — so this has to travel
+     * with the query rather than stay a parameter of the call that started it.
+     */
+    val isExact: Boolean get() = resolvedBy == "exact"
+}
