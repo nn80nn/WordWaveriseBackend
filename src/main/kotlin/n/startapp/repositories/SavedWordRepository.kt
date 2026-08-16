@@ -1,6 +1,7 @@
 package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
+import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.SavedWord
 import org.jetbrains.exposed.sql.*
@@ -105,7 +106,19 @@ class SavedWordRepository {
     /**
      * Delete a saved word
      */
+    /**
+     * Removes the word and the card made from it.
+     *
+     * ⚠️ The card goes too. It exists *because* the word was saved, and leaving it behind
+     * produced a card for a word that is no longer in the vocabulary — reviewable, editable,
+     * and impossible to get rid of from any screen. Deleting a word is the one moment where the
+     * user has said they are done with it.
+     */
     suspend fun delete(userId: Int, word: String): Boolean = dbQuery {
+        val key = word.trim().lowercase()
+        Flashcards.deleteWhere {
+            (Flashcards.userId eq userId) and (Flashcards.word.lowerCase() eq key)
+        }
         SavedWords.deleteWhere {
             (SavedWords.userId eq userId) and (SavedWords.word eq word)
         } > 0
