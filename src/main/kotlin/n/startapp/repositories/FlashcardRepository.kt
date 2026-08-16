@@ -25,7 +25,8 @@ class FlashcardRepository {
         translation: String,
         definition: String?,
         example: String?,
-        categoryId: Int? = null
+        categoryId: Int? = null,
+        senseId: String? = null
     ): Flashcard = dbQuery {
         val now = Instant.now()
         val id = Flashcards.insertAndGetId {
@@ -36,6 +37,7 @@ class FlashcardRepository {
             it[Flashcards.translation] = translation
             it[Flashcards.definition] = definition
             it[Flashcards.example] = example
+            it[Flashcards.senseId] = senseId
             it[easeFactor] = 2.5f
             it[repetitions] = 0
             it[interval] = 0

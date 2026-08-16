@@ -27,7 +27,8 @@ class FlashcardService {
         translation: String,
         definition: String?,
         example: String?,
-        categoryId: Int? = null
+        categoryId: Int? = null,
+        senseId: String? = null
     ): FlashcardDto {
         logger.info("Creating flashcard directly for user $userId: word='$word'")
 
@@ -37,7 +38,8 @@ class FlashcardService {
             translation = translation,
             definition = definition,
             example = example,
-            categoryId = categoryId
+            categoryId = categoryId,
+            senseId = senseId
         )
 
         return flashcardToDto(flashcard)

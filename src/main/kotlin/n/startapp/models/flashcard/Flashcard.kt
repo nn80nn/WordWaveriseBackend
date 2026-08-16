@@ -112,7 +112,13 @@ data class CreateFlashcardDirectRequest(
     val translation: String,
     val definition: String? = null,
     val example: String? = null,
-    val categoryId: Int? = null
+    val categoryId: Int? = null,
+    /**
+     * The sense the card is about. Carried here as well as on the saved word because a client
+     * can create a card in the same breath as saving — without it that card would be born
+     * unpinned and the corpus refresh would rewrite it from the article's first sense.
+     */
+    val senseId: String? = null
 )
 
 /**

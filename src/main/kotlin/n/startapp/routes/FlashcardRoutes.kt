@@ -48,7 +48,8 @@ fun Route.flashcardRoutes() {
                     translation = request.translation.trim(),
                     definition = request.definition?.trim(),
                     example = request.example?.trim(),
-                    categoryId = request.categoryId
+                    categoryId = request.categoryId,
+                    senseId = request.senseId?.trim()?.takeIf { it.isNotEmpty() }
                 )
 
                 call.respond(HttpStatusCode.Created, ApiResponse.success(flashcard))
