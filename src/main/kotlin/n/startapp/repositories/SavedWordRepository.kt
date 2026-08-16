@@ -114,6 +114,53 @@ class SavedWordRepository {
     /**
      * Check if word is saved by user
      */
+    /** Every word filed in one folder, in the order it was saved. */
+    suspend fun findByCategory(userId: Int, categoryId: Int): List<SavedWord> = dbQuery {
+        SavedWords.selectAll()
+            .where { (SavedWords.userId eq userId) and (SavedWords.categoryId eq categoryId) }
+            .orderBy(SavedWords.savedAt to SortOrder.ASC)
+            .map(::resultRowToSavedWord)
+    }
+
+    /**
+     * Copies somebody else's words into [userId]'s account, filed under [categoryId].
+     *
+     * ⚠️ A word the user already has is left exactly where it is, and counted rather than moved.
+     * Accepting a shared folder must not rearrange the vocabulary they built themselves — and
+     * the pinned sense they chose for that word is their decision, not the sharer's.
+     *
+     * @return how many were added, and how many were already there.
+     */
+    suspend fun copyInto(userId: Int, categoryId: Int, words: List<SavedWord>): Pair<Int, Int> = dbQuery {
+        val existing = SavedWords.selectAll()
+            .where { SavedWords.userId eq userId }
+            .map { it[SavedWords.word].trim().lowercase() }
+            .toSet()
+
+        var added = 0
+        var alreadyHad = 0
+        for (source in words) {
+            val key = source.word.trim().lowercase()
+            if (key in existing) {
+                alreadyHad++
+                continue
+            }
+            SavedWords.insert {
+                it[SavedWords.userId] = userId
+                it[word] = key
+                it[translation] = source.translation?.take(500)
+                it[definition] = source.definition
+                it[example] = source.example
+                // Выбранное значение переезжает вместе со словом: без него человек получил бы
+                // то же слово, но с другим смыслом — то есть не ту папку, которой делились.
+                it[senseId] = source.senseId
+                it[SavedWords.categoryId] = categoryId
+            }
+            added++
+        }
+        added to alreadyHad
+    }
+
     suspend fun exists(userId: Int, word: String): Boolean = dbQuery {
         SavedWords.selectAll()
             .where { (SavedWords.userId eq userId) and (SavedWords.word eq word) }

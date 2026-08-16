@@ -7,6 +7,9 @@ import n.startapp.models.auth.CategoryDTO
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 
+/** A folder reached through its share link: who owns it, and what it is called. */
+data class SharedFolder(val id: Int, val ownerId: Int, val name: String)
+
 class CategoryRepository {
 
     private fun rowToDTO(row: ResultRow) = CategoryDTO(
@@ -53,6 +56,73 @@ class CategoryRepository {
             it[SavedWords.categoryId] = null
         }
         Categories.deleteWhere { (Categories.id eq categoryId) and (Categories.userId eq userId) } > 0
+    }
+
+    // ── Sharing ───────────────────────────────────────────────────────────
+
+    /**
+     * The folder's share link, minted on first request and stable afterwards.
+     *
+     * Stable on purpose: a second press of "поделиться" must not invalidate the link already
+     * sent to somebody. Revoking is a separate, deliberate act ([revokeShare]).
+     */
+    suspend fun shareToken(userId: Int, categoryId: Int): String? = dbQuery {
+        val row = Categories.selectAll()
+            .where { (Categories.id eq categoryId) and (Categories.userId eq userId) }
+            .singleOrNull()
+            ?: return@dbQuery null
+
+        row[Categories.shareToken] ?: run {
+            val token = newToken()
+            Categories.update({ Categories.id eq categoryId }) { it[shareToken] = token }
+            token
+        }
+    }
+
+    suspend fun revokeShare(userId: Int, categoryId: Int): Boolean = dbQuery {
+        Categories.update({ (Categories.id eq categoryId) and (Categories.userId eq userId) }) {
+            it[shareToken] = null
+        } > 0
+    }
+
+    suspend fun currentShareToken(userId: Int, categoryId: Int): String? = dbQuery {
+        Categories.selectAll()
+            .where { (Categories.id eq categoryId) and (Categories.userId eq userId) }
+            .singleOrNull()
+            ?.get(Categories.shareToken)
+    }
+
+    /** The folder a share link points at, or null when the link was revoked or never existed. */
+    suspend fun findByShareToken(token: String): SharedFolder? = dbQuery {
+        Categories.selectAll()
+            .where { Categories.shareToken eq token }
+            .singleOrNull()
+            ?.let { SharedFolder(id = it[Categories.id], ownerId = it[Categories.userId], name = it[Categories.name]) }
+    }
+
+    /**
+     * A name that does not collide with what the user already has.
+     *
+     * Two folders with the same name are indistinguishable in every picker in the app, and
+     * importing the same shared folder twice is an ordinary thing to do by accident.
+     */
+    suspend fun freeName(userId: Int, wanted: String): String = dbQuery {
+        val taken = Categories.selectAll()
+            .where { Categories.userId eq userId }
+            .map { it[Categories.name].trim().lowercase() }
+            .toSet()
+
+        val base = wanted.trim().take(90)
+        if (base.lowercase() !in taken) return@dbQuery base
+        generateSequence(2) { it + 1 }
+            .map { "$base ($it)" }
+            .first { it.lowercase() !in taken }
+    }
+
+    private fun newToken(): String {
+        val alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+        val random = java.security.SecureRandom()
+        return (1..12).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
     }
 
     suspend fun exists(userId: Int, categoryId: Int): Boolean = dbQuery {

@@ -28,6 +28,7 @@ import n.startapp.routes.lookupRoutes
 import n.startapp.routes.pushRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.routes.seoRoutes
+import n.startapp.routes.sharedFolderRoutes
 import n.startapp.routes.testingRoutes
 import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
@@ -149,6 +150,7 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // Category routes (protected)
         categoryRoutes()
+        sharedFolderRoutes()
 
         // Practice sessions built from a folder (protected)
         exerciseRoutes(services.exerciseService)

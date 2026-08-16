@@ -11,6 +11,11 @@ import n.startapp.exceptions.NotFoundException
 import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
 import n.startapp.models.auth.CreateCategoryRequest
+import n.startapp.models.auth.ImportResult
+import n.startapp.models.auth.ShareLink
+import n.startapp.models.auth.SharedFolderPreview
+import n.startapp.models.auth.SharedWordPreview
+import n.startapp.utils.EnvConfig
 import n.startapp.models.auth.SetWordCategoryRequest
 import n.startapp.models.auth.UpdateCategoryRequest
 import n.startapp.repositories.CategoryRepository
@@ -37,6 +42,49 @@ fun Route.categoryRoutes() {
                 if (request.name.isBlank()) throw BadRequestException("Category name cannot be empty")
                 val category = categoryRepository.create(userId, request.name, request.color)
                 call.respond(HttpStatusCode.Created, ApiResponse.success(category))
+            }
+
+            /**
+             * POST /api/categories/{id}/share — mint (or return) the folder's share link.
+             *
+             * Stable across presses: a second tap must not invalidate a link already sent.
+             */
+            post("/{id}/share") {
+                val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                val categoryId = call.parameters["id"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid category id")
+
+                val token = categoryRepository.shareToken(userId, categoryId)
+                    ?: throw NotFoundException("Category not found")
+
+                call.respond(ApiResponse.success(ShareLink(token = token, url = shareUrl(token))))
+            }
+
+            /** The current link, if the folder has one — so the UI can show its state. */
+            get("/{id}/share") {
+                val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                val categoryId = call.parameters["id"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid category id")
+
+                val token = categoryRepository.currentShareToken(userId, categoryId)
+                call.respond(
+                    ApiResponse.success(token?.let { ShareLink(token = it, url = shareUrl(it)) })
+                )
+            }
+
+            /**
+             * Stops the link working. Copies already taken are untouched — they are the other
+             * person's words now, and reaching into their account is not what "unshare" means.
+             */
+            delete("/{id}/share") {
+                val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                val categoryId = call.parameters["id"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid category id")
+
+                if (!categoryRepository.revokeShare(userId, categoryId)) {
+                    throw NotFoundException("Category not found")
+                }
+                call.respond(ApiResponse.success("Share link revoked"))
             }
 
             // Rename a category
@@ -82,6 +130,74 @@ fun Route.categoryRoutes() {
         }
     }
 }
+
+
+/**
+ * Where a shared folder is read and taken.
+ *
+ * The preview is public because the link *is* the permission — asking someone to sign up before
+ * they can see what they were sent turns a shared folder into an advert. Taking a copy needs an
+ * account, because a copy has to land somewhere.
+ */
+fun Route.sharedFolderRoutes() {
+    val categoryRepository = CategoryRepository()
+    val savedWordRepository = SavedWordRepository()
+
+    get("/api/share/{token}") {
+        val token = call.parameters["token"]?.trim().orEmpty()
+        val folder = categoryRepository.findByShareToken(token)
+            ?: throw NotFoundException("This folder is not shared")
+
+        val words = savedWordRepository.findByCategory(folder.ownerId, folder.id)
+        call.respond(
+            ApiResponse.success(
+                SharedFolderPreview(
+                    name = folder.name,
+                    wordCount = words.size,
+                    sample = words.take(12).map {
+                        SharedWordPreview(word = it.word, translation = it.translation)
+                    }
+                )
+            )
+        )
+    }
+
+    authenticate("auth-jwt") {
+        post("/api/share/{token}/import") {
+            val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+            val token = call.parameters["token"]?.trim().orEmpty()
+
+            val folder = categoryRepository.findByShareToken(token)
+                ?: throw NotFoundException("This folder is not shared")
+
+            val words = savedWordRepository.findByCategory(folder.ownerId, folder.id)
+            if (words.isEmpty()) throw BadRequestException("This folder has no words")
+
+            // Своя же папка: копия была бы дубликатом всего, что у человека уже есть.
+            if (folder.ownerId == userId) throw BadRequestException("This folder is already yours")
+
+            val name = categoryRepository.freeName(userId, folder.name)
+            val created = categoryRepository.create(userId, name, null)
+            val (added, alreadyHad) = savedWordRepository.copyInto(userId, created.id, words)
+
+            call.respond(
+                HttpStatusCode.Created,
+                ApiResponse.success(
+                    ImportResult(
+                        categoryId = created.id,
+                        name = created.name,
+                        added = added,
+                        alreadyHad = alreadyHad
+                    )
+                )
+            )
+        }
+    }
+}
+
+/** The address a link is shown as. Same origin the site is served from — see `SITE_URL`. */
+private fun shareUrl(token: String): String =
+    "${EnvConfig.siteUrl.trimEnd('/')}/f/$token"
 
 private fun getUserIdFromPrincipal(call: ApplicationCall): Int? {
     val principal = call.principal<io.ktor.server.auth.jwt.JWTPrincipal>()
