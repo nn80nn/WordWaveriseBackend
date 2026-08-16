@@ -384,14 +384,27 @@ class QueryResolver(
     /**
      * Trims, unifies Unicode, collapses whitespace and strips wrapping quotes plus trailing
      * sentence punctuation, so `"Running."` and `running` resolve to the same lookup.
+     *
+     * The stripping repeats because the two nest in either order — `"word."` and `"word".` are
+     * both things people type — and one pass of each leaves behind whatever the other uncovered.
+     * A single fixed order turned `"take up".` into `take up"`, which is not a headword any
+     * dictionary has.
      */
-    fun normalize(raw: String): String =
-        Normalizer.normalize(raw.trim(), Normalizer.Form.NFKC)
+    fun normalize(raw: String): String {
+        var text = Normalizer.normalize(raw.trim(), Normalizer.Form.NFKC)
             .replace(Regex("\\s+"), " ")
-            .trim('"', '\'', '«', '»', '“', '”', ' ')
-            .trimEnd('.', '!', '?', ',', ';', ':')
-            .trim()
-            .lowercase()
+
+        while (true) {
+            val stripped = text
+                .trim('"', '\'', '«', '»', '“', '”', ' ')
+                .trimEnd('.', '!', '?', ',', ';', ':')
+            // Every pass either removes a character or finds nothing left to remove.
+            if (stripped == text) break
+            text = stripped
+        }
+
+        return text.trim().lowercase()
+    }
 
     /**
      * English text has vowels. Latin with none of them is not a word someone meant to type,

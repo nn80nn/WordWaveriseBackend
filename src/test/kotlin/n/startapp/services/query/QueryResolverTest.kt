@@ -91,6 +91,16 @@ class QueryResolverTest {
     }
 
     @Test
+    fun `quotes and sentence punctuation come off in either nesting order`() {
+        val r = resolver()
+
+        assertEquals("take up", r.normalize("\"take up\"."))
+        assertEquals("take up", r.normalize("\"take up.\""))
+        assertEquals("running", r.normalize("«Running!»"))
+        assertEquals("running", r.normalize("Running."))
+    }
+
+    @Test
     fun `exact search consults nothing that could change its mind`() {
         val oracle = FakeOracle(known = setOf("take"))
         val llm = CountingLlm()
