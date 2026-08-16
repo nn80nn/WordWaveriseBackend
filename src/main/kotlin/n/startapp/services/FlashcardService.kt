@@ -2,7 +2,7 @@ package n.startapp.services
 
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.flashcard.*
-import n.startapp.models.lexical.LexicalEntry
+import n.startapp.services.lexical.SenseWording
 import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.utils.SpacedRepetitionAlgorithm
@@ -222,6 +222,7 @@ class FlashcardService {
             translation = flashcard.translation,
             definition = flashcard.definition,
             example = flashcard.example,
+            senseId = flashcard.senseId,
             categoryId = flashcard.categoryId,
             customized = flashcard.customized,
             repetitions = flashcard.repetitions,
@@ -265,7 +266,9 @@ class FlashcardService {
 
         return cards.map { card ->
             if (card.customized) return@map card
-            val fresh = entries[card.word.trim().lowercase()]?.let { wordingOf(it) }
+            // По значению, к которому карточку привязали, а не по первому в статье: без этого
+            // обновление из корпуса молча переписывало бы выбранный человеком смысл на другой.
+            val fresh = entries[card.word.trim().lowercase()]?.let { SenseWording.of(it, card.senseId) }
                 ?: return@map card
 
             val definitionChanged = fresh.definition != null && fresh.definition != card.definition
@@ -285,22 +288,6 @@ class FlashcardService {
                 card
             }
         }
-    }
-
-    private data class Wording(
-        val translation: String,
-        val definition: String?,
-        val example: String?
-    )
-
-    /** The first sense of the first part of speech — what a card shows. */
-    private fun wordingOf(entry: LexicalEntry): Wording? {
-        val sense = entry.posGroups.firstOrNull()?.senses?.firstOrNull() ?: return null
-        return Wording(
-            translation = sense.translationsRu.joinToString(", ").trim(),
-            definition = sense.definitionEn.takeIf { it.isNotBlank() },
-            example = sense.examples.firstOrNull()?.en?.takeIf { it.isNotBlank() }
-        )
     }
 
 }

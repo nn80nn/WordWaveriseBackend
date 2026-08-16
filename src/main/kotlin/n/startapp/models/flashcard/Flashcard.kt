@@ -16,6 +16,8 @@ data class Flashcard(
     val translation: String,
     val definition: String?,
     val example: String?,
+    /** The sense of the article this card is about, inherited from the saved word. */
+    val senseId: String? = null,
     val easeFactor: Float,
     val repetitions: Int,
     val interval: Int, // Days until next review
@@ -41,6 +43,8 @@ data class FlashcardDto(
     val translation: String,
     val definition: String?,
     val example: String?,
+    /** Which sense of the article the card is about, when the user pinned one. */
+    val senseId: String? = null,
     val categoryId: Int? = null,
     val customized: Boolean = false,
     /** Consecutive correct reviews — what the clients render as a progress dot row. */

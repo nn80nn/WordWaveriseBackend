@@ -13,6 +13,15 @@ object SavedWords : Table("saved_words") {
     val word = varchar("word", 255)
     val translation = varchar("translation", 500).nullable()
     val definition = text("definition").nullable()
+    val example = text("example").nullable()
+
+    /**
+     * Which sense of the article the user pinned ("n1", "v2"), or null for "whatever the
+     * article puts first". The id is assigned server-side when the article is annotated, so it
+     * is stable across re-reads and cannot be fabricated by a client.
+     */
+    val senseId = varchar("sense_id", 32).nullable()
+
     val savedAt = timestamp("saved_at").clientDefault { Instant.now() }
     val categoryId = integer("category_id").references(Categories.id).nullable()
 

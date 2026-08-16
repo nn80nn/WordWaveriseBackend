@@ -18,6 +18,7 @@ import n.startapp.models.auth.toDTO
 import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.repositories.SavedWordRepository
 import n.startapp.services.SavedWordEnrichment
+import n.startapp.services.lexical.SenseWording
 import org.slf4j.LoggerFactory
 
 fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
@@ -30,17 +31,7 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
                 post {
                     val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                     val request = call.receive<SaveWordRequest>()
-
-                    if (request.word.isBlank()) {
-                        throw BadRequestException("Word cannot be empty")
-                    }
-
-                    val savedWord = savedWordRepository.save(
-                        userId = userId,
-                        word = request.word.trim().lowercase(),
-                        translation = request.translation,
-                        definition = request.definition
-                    ) ?: throw Exception("Failed to save word")
+                    val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries)
 
                     call.respond(
                         HttpStatusCode.Created,
@@ -83,17 +74,7 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
             post("/save") {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                 val request = call.receive<SaveWordRequest>()
-
-                if (request.word.isBlank()) {
-                    throw BadRequestException("Word cannot be empty")
-                }
-
-                val savedWord = savedWordRepository.save(
-                    userId = userId,
-                    word = request.word.trim().lowercase(),
-                    translation = request.translation,
-                    definition = request.definition
-                ) ?: throw Exception("Failed to save word")
+                val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries)
 
                 call.respond(
                     ApiResponse.success(savedWord.toDTO())
@@ -115,13 +96,52 @@ private fun getUserIdFromPrincipal(call: ApplicationCall): Int? {
 private val savedWordLogger = LoggerFactory.getLogger("SavedWordsRoutes")
 
 /**
+ * One place where a save request becomes a row, so `/saved` and the legacy `/save` cannot drift.
+ *
+ * When the request pins a sense, the wording is read from the corpus rather than from the body:
+ * the client picked a sense id, not a translation, and letting it post its own text back would
+ * make the same pin mean different things in the browser and on the phone. If the corpus cannot
+ * answer — the article is not annotated yet, or the id is unknown — the client's snapshot is
+ * kept, so the pin still works on a word whose article is still being built.
+ */
+private suspend fun SavedWordRepository.saveFrom(
+    request: SaveWordRequest,
+    userId: Int,
+    lexicalEntries: LexicalEntryRepository
+): SavedWord {
+    if (request.word.isBlank()) throw BadRequestException("Word cannot be empty")
+
+    val word = request.word.trim().lowercase()
+    val pinned = request.senseId?.trim()?.takeIf { it.isNotEmpty() }
+
+    val wording = pinned?.let { senseId ->
+        runCatching { lexicalEntries.findLatestByLemma(word) }
+            .onFailure { savedWordLogger.warn("Could not read the corpus while pinning $word: ${it.message}") }
+            .getOrNull()
+            ?.let { SenseWording.of(it, senseId) }
+    }
+
+    return save(
+        userId = userId,
+        word = word,
+        translation = wording?.translation?.takeIf { it.isNotBlank() } ?: request.translation,
+        definition = wording?.definition ?: request.definition,
+        example = wording?.example,
+        senseId = pinned
+    ) ?: throw Exception("Failed to save word")
+}
+
+
+/**
  * Closes the gaps [SavedWordEnrichment] finds, and writes them back so the next read is cheap.
  */
 private suspend fun List<SavedWord>.withCorpusGapsFilled(
     lexicalEntries: LexicalEntryRepository,
     repository: SavedWordRepository
 ): List<SavedWord> {
-    val gaps = filter { it.definition.isNullOrBlank() || it.translation.isNullOrBlank() }
+    val gaps = filter {
+        it.definition.isNullOrBlank() || it.translation.isNullOrBlank() || it.example.isNullOrBlank()
+    }
     if (gaps.isEmpty()) return this
 
     val entries = try {
@@ -136,8 +156,13 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
         val filled = SavedWordEnrichment.fill(saved, entries[saved.word.trim().lowercase()])
             ?: return@map saved
 
-        runCatching { repository.updateContent(saved.id, filled.translation, filled.definition) }
-            .onFailure { savedWordLogger.warn("Could not fill saved word ${saved.id}: ${it.message}") }
-        saved.copy(definition = filled.definition, translation = filled.translation)
+        runCatching {
+            repository.updateContent(saved.id, filled.translation, filled.definition, filled.example)
+        }.onFailure { savedWordLogger.warn("Could not fill saved word ${saved.id}: ${it.message}") }
+        saved.copy(
+            definition = filled.definition,
+            translation = filled.translation,
+            example = filled.example ?: saved.example
+        )
     }
 }

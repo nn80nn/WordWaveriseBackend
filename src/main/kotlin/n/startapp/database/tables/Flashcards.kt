@@ -23,6 +23,14 @@ object Flashcards : IntIdTable("flashcards") {
     val definition = text("definition").nullable()
     val example = text("example").nullable()
 
+    /**
+     * The sense this card is about, carried over from the saved word it was made from.
+     *
+     * Without it the corpus refresh would re-read the *first* sense of the article and quietly
+     * re-point a card the user pinned to the third one — see `FlashcardService.refreshFromCorpus`.
+     */
+    val senseId = varchar("sense_id", 32).nullable()
+
     // SM-2 Algorithm fields
     val easeFactor = float("ease_factor").default(2.5f) // Initial ease factor
     val repetitions = integer("repetitions").default(0) // Number of consecutive correct reviews

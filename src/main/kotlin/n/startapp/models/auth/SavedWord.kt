@@ -13,7 +13,10 @@ data class SavedWord(
     val translation: String?,
     val definition: String?,
     val savedAt: Instant,
-    val categoryId: Int? = null
+    val categoryId: Int? = null,
+    val example: String? = null,
+    /** The sense of the article the user pinned, or null when they saved the word as a whole. */
+    val senseId: String? = null
 )
 
 /**
@@ -26,7 +29,9 @@ data class SavedWordDTO(
     val translation: String?,
     val definition: String?,
     val savedAt: String,
-    val categoryId: Int? = null
+    val categoryId: Int? = null,
+    val example: String? = null,
+    val senseId: String? = null
 )
 
 /**
@@ -36,7 +41,14 @@ data class SavedWordDTO(
 data class SaveWordRequest(
     val word: String,
     val translation: String? = null,
-    val definition: String? = null
+    val definition: String? = null,
+    /**
+     * Pins the word to one sense of its article. The wording is then taken from the corpus
+     * server-side and the [translation]/[definition] sent alongside are ignored: two clients
+     * that pick the same sense must end up with the same card, and only the server can promise
+     * that. Saving a word that is already saved with a different sense re-pins it.
+     */
+    val senseId: String? = null
 )
 
 /**
@@ -64,5 +76,7 @@ fun SavedWord.toDTO(): SavedWordDTO = SavedWordDTO(
     translation = translation,
     definition = definition,
     savedAt = savedAt.toString(),
-    categoryId = categoryId
+    categoryId = categoryId,
+    example = example,
+    senseId = senseId
 )

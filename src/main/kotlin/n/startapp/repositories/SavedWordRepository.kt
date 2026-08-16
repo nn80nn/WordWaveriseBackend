@@ -22,28 +22,52 @@ class SavedWordRepository {
         translation = row[SavedWords.translation],
         definition = row[SavedWords.definition],
         savedAt = row[SavedWords.savedAt],
-        categoryId = row[SavedWords.categoryId]
+        categoryId = row[SavedWords.categoryId],
+        example = row[SavedWords.example],
+        senseId = row[SavedWords.senseId]
     )
 
     /**
-     * Save a word for a user
+     * Save a word for a user, optionally pinned to one sense of its article.
+     *
+     * A word that is already saved is normally returned untouched — saving twice must not
+     * rewrite what is there. A [senseId] is the exception: it is an explicit act of choosing a
+     * different meaning, and the row is re-pinned. Without that, the only way to change your
+     * mind about which sense you meant would be to delete the word and lose its folder.
      */
-    suspend fun save(userId: Int, word: String, translation: String? = null, definition: String? = null): SavedWord? = dbQuery {
-        // Check if word already saved
+    suspend fun save(
+        userId: Int,
+        word: String,
+        translation: String? = null,
+        definition: String? = null,
+        example: String? = null,
+        senseId: String? = null
+    ): SavedWord? = dbQuery {
         val existing = SavedWords.selectAll()
             .where { (SavedWords.userId eq userId) and (SavedWords.word eq word) }
             .singleOrNull()
 
         if (existing != null) {
-            // Already saved, return existing
-            resultRowToSavedWord(existing)
+            if (senseId == null) return@dbQuery resultRowToSavedWord(existing)
+
+            SavedWords.update({ SavedWords.id eq existing[SavedWords.id] }) {
+                it[SavedWords.senseId] = senseId
+                it[SavedWords.translation] = translation?.take(500)
+                it[SavedWords.definition] = definition
+                it[SavedWords.example] = example
+            }
+            SavedWords.selectAll()
+                .where { SavedWords.id eq existing[SavedWords.id] }
+                .single()
+                .let(::resultRowToSavedWord)
         } else {
-            // Insert new saved word
             val insertStatement = SavedWords.insert {
                 it[SavedWords.userId] = userId
                 it[SavedWords.word] = word
-                it[SavedWords.translation] = translation
+                it[SavedWords.translation] = translation?.take(500)
                 it[SavedWords.definition] = definition
+                it[SavedWords.example] = example
+                it[SavedWords.senseId] = senseId
             }
             insertStatement.resultedValues?.singleOrNull()?.let(::resultRowToSavedWord)
         }
@@ -65,10 +89,16 @@ class SavedWordRepository {
      * Only ever called with values that were blank on the row, so this cannot overwrite
      * anything a user put there.
      */
-    suspend fun updateContent(id: Int, translation: String?, definition: String?): Boolean = dbQuery {
+    suspend fun updateContent(
+        id: Int,
+        translation: String?,
+        definition: String?,
+        example: String? = null
+    ): Boolean = dbQuery {
         SavedWords.update({ SavedWords.id eq id }) {
             it[SavedWords.translation] = translation?.take(500)
             it[SavedWords.definition] = definition
+            if (example != null) it[SavedWords.example] = example
         } > 0
     }
 

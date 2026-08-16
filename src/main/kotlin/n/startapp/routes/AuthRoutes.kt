@@ -242,6 +242,33 @@ fun Route.authRoutes() {
 
         // Protected endpoints — require valid JWT
         authenticate("auth-jwt") {
+            /**
+             * Trades a still-valid token for a fresh one — a sliding session.
+             *
+             * The token lives 30 days and nothing renewed it, so somebody who used the app every
+             * day was still signed out on day 31, mid-session, with no warning and no way to tell
+             * it apart from a bug. Clients call this when their token is past roughly two thirds
+             * of its life, which keeps an active user signed in indefinitely while an abandoned
+             * token still expires on schedule.
+             *
+             * An expired token cannot be renewed here — it no longer passes the verifier, which
+             * is the point: this extends a live session, it does not resurrect a dead one.
+             */
+            post("/refresh") {
+                val principal = call.principal<JWTPrincipal>()
+                val userId = principal?.payload?.getClaim("userId")?.asInt()
+                    ?: throw UnauthorizedException("Invalid token")
+
+                val user = userRepository.findById(userId)
+                    ?: throw UnauthorizedException("User not found")
+
+                call.respond(
+                    ApiResponse.success(
+                        AuthResponse(token = JwtUtil.generateToken(user), user = user.toDTO())
+                    )
+                )
+            }
+
             // Get current user profile
             get("/me") {
                 val principal = call.principal<JWTPrincipal>()

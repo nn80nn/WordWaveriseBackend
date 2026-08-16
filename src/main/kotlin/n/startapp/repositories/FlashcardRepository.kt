@@ -123,7 +123,10 @@ class FlashcardRepository {
             it[word] = savedWord[SavedWords.word]
             it[translation] = savedWord[SavedWords.translation] ?: ""
             it[definition] = savedWord[SavedWords.definition]
-            it[example] = null
+            // Карточка о том же значении, что и слово: без переноса пина обновление из корпуса
+            // на первой же сессии переписало бы её первым значением статьи.
+            it[example] = savedWord[SavedWords.example]
+            it[senseId] = savedWord[SavedWords.senseId]
             it[easeFactor] = 2.5f
             it[repetitions] = 0
             it[interval] = 0
@@ -197,7 +200,8 @@ class FlashcardRepository {
                 it[Flashcards.word] = word
                 it[translation] = row[SavedWords.translation] ?: ""
                 it[definition] = row[SavedWords.definition]
-                it[example] = null
+                it[example] = row[SavedWords.example]
+                it[senseId] = row[SavedWords.senseId]
                 it[easeFactor] = 2.5f
                 it[repetitions] = 0
                 it[interval] = 0
@@ -330,6 +334,7 @@ class FlashcardRepository {
         translation = row[Flashcards.translation],
         definition = row[Flashcards.definition],
         example = row[Flashcards.example],
+        senseId = row[Flashcards.senseId],
         easeFactor = row[Flashcards.easeFactor],
         repetitions = row[Flashcards.repetitions],
         interval = row[Flashcards.interval],

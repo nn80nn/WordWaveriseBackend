@@ -11,13 +11,43 @@ import kotlin.test.assertNull
 
 class SavedWordEnrichmentTest {
 
-    private fun saved(definition: String? = null, translation: String? = null) = SavedWord(
+    private fun saved(
+        definition: String? = null,
+        translation: String? = null,
+        senseId: String? = null
+    ) = SavedWord(
         id = 1,
         userId = 1,
         word = "omit",
         translation = translation,
         definition = definition,
-        savedAt = Instant.EPOCH
+        savedAt = Instant.EPOCH,
+        senseId = senseId
+    )
+
+    /** Two senses under one headword — the case a pin exists for. */
+    private fun twoSenseEntry() = LexicalEntry(
+        lemma = "resolve",
+        posGroups = listOf(
+            PosGroup(
+                pos = "verb",
+                posRu = "глагол",
+                senses = listOf(
+                    Sense(
+                        id = "v1",
+                        definitionEn = "to find a solution to a problem",
+                        definitionRu = "найти решение",
+                        translationsRu = listOf("решать")
+                    ),
+                    Sense(
+                        id = "v2",
+                        definitionEn = "to separate into constituent parts",
+                        definitionRu = "разложить на составляющие",
+                        translationsRu = listOf("разлагать", "разрешать")
+                    )
+                )
+            )
+        )
     )
 
     private fun entry(
@@ -91,5 +121,27 @@ class SavedWordEnrichmentTest {
         val already = saved(definition = "to fail to include something", translation = "пропускать, опускать")
 
         assertNull(SavedWordEnrichment.fill(already, entry()))
+    }
+
+    @Test
+    fun `a pinned word is filled from the sense it was pinned to`() {
+        val filled = SavedWordEnrichment.fill(saved(senseId = "v2"), twoSenseEntry())
+
+        assertEquals("to separate into constituent parts", filled?.definition)
+        assertEquals("разлагать, разрешать", filled?.translation)
+    }
+
+    @Test
+    fun `an unpinned word still takes the first sense`() {
+        val filled = SavedWordEnrichment.fill(saved(), twoSenseEntry())
+
+        assertEquals("to find a solution to a problem", filled?.definition)
+    }
+
+    @Test
+    fun `a pin the article no longer carries fills nothing`() {
+        // Silently dropping to the first sense would hand back a meaning the user never chose,
+        // and the row would look complete, so nothing would ever correct it.
+        assertNull(SavedWordEnrichment.fill(saved(senseId = "v9"), twoSenseEntry()))
     }
 }
