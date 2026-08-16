@@ -30,6 +30,14 @@ class FlashcardRepository {
         phonetic: String? = null,
         audioUrl: String? = null
     ): Flashcard = dbQuery {
+        // ⚠️ Одно слово — одна карточка. Прямое создание вставляло безусловно, и второй
+        // «в флешкарты» с другого устройства (или после переустановки приложения, где
+        // локальная проверка на дубль ничего не знает) заводил вторую карточку на то же
+        // слово: в повторении оно приходило дважды, а расписание расходилось между копиями.
+        Flashcards.select {
+            (Flashcards.userId eq userId) and (Flashcards.word.lowerCase() eq word.trim().lowercase())
+        }.firstOrNull()?.let { return@dbQuery rowToFlashcard(it) }
+
         val now = Instant.now()
         val id = Flashcards.insertAndGetId {
             it[Flashcards.userId] = userId
