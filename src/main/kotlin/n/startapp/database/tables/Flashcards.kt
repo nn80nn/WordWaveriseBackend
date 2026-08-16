@@ -31,6 +31,16 @@ object Flashcards : IntIdTable("flashcards") {
      */
     val senseId = varchar("sense_id", 32).nullable()
 
+    /**
+     * How the word sounds, copied from the corpus for the card's own part of speech.
+     *
+     * A card is the one place the word is met without its article, so the transcription and the
+     * recording have to travel with it — otherwise the front of the card can only show letters,
+     * and the sound is exactly what English spelling hides.
+     */
+    val phonetic = varchar("phonetic", 100).nullable()
+    val audioUrl = text("audio_url").nullable()
+
     // SM-2 Algorithm fields
     val easeFactor = float("ease_factor").default(2.5f) // Initial ease factor
     val repetitions = integer("repetitions").default(0) // Number of consecutive correct reviews

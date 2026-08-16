@@ -55,6 +55,19 @@ fun Route.flashcardRoutes() {
                 call.respond(HttpStatusCode.Created, ApiResponse.success(flashcard))
             }
 
+            /**
+             * POST /api/flashcards/regenerate — re-read the whole deck from the corpus.
+             *
+             * The listings refresh what they hand back anyway; this is for the decks that
+             * predate a change in what a card carries, where nothing looks broken enough to
+             * fix by hand and the format quietly stays split.
+             */
+            post("/regenerate") {
+                val includeCustomized = call.request.queryParameters["includeCustomized"] == "true"
+                val result = flashcardService.regenerate(call.userId(), includeCustomized)
+                call.respond(ApiResponse.success(result))
+            }
+
             // GET /api/flashcards - Get all flashcards, optionally in one folder
             get {
                 val flashcards = flashcardService.getAllFlashcards(call.userId(), call.categoryFilter())

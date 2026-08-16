@@ -26,7 +26,9 @@ class FlashcardRepository {
         definition: String?,
         example: String?,
         categoryId: Int? = null,
-        senseId: String? = null
+        senseId: String? = null,
+        phonetic: String? = null,
+        audioUrl: String? = null
     ): Flashcard = dbQuery {
         val now = Instant.now()
         val id = Flashcards.insertAndGetId {
@@ -38,6 +40,8 @@ class FlashcardRepository {
             it[Flashcards.definition] = definition
             it[Flashcards.example] = example
             it[Flashcards.senseId] = senseId
+            it[Flashcards.phonetic] = phonetic
+            it[Flashcards.audioUrl] = audioUrl
             it[easeFactor] = 2.5f
             it[repetitions] = 0
             it[interval] = 0
@@ -68,7 +72,15 @@ class FlashcardRepository {
         example: String?,
         word: String? = null,
         customized: Boolean = false,
-        userId: Int? = null
+        userId: Int? = null,
+        /**
+         * Pronunciation is written only by the corpus refresh, which passes [rewritePronunciation].
+         * The hand editor leaves it alone: a user correcting a translation is not telling us the
+         * word sounds different, and blanking the recording would be a silent side effect.
+         */
+        rewritePronunciation: Boolean = false,
+        phonetic: String? = null,
+        audioUrl: String? = null
     ): Boolean = dbQuery {
         val target: Op<Boolean> =
             if (userId == null) (Flashcards.id eq cardId)
@@ -79,6 +91,10 @@ class FlashcardRepository {
             it[Flashcards.definition] = definition
             it[Flashcards.example] = example
             if (word != null) it[Flashcards.word] = word
+            if (rewritePronunciation) {
+                it[Flashcards.phonetic] = phonetic
+                it[Flashcards.audioUrl] = audioUrl
+            }
             if (customized) {
                 it[Flashcards.customized] = true
                 it[updatedAt] = Instant.now()
@@ -105,7 +121,9 @@ class FlashcardRepository {
         senseId: String,
         translation: String?,
         definition: String?,
-        example: String?
+        example: String?,
+        phonetic: String? = null,
+        audioUrl: String? = null
     ): Boolean = dbQuery {
         Flashcards.update({
             (Flashcards.userId eq userId) and
@@ -116,6 +134,9 @@ class FlashcardRepository {
             if (!translation.isNullOrBlank()) it[Flashcards.translation] = translation
             it[Flashcards.definition] = definition
             it[Flashcards.example] = example
+            // Значение могло переехать в другую часть речи, а у омографов она звучит иначе.
+            it[Flashcards.phonetic] = phonetic
+            it[Flashcards.audioUrl] = audioUrl
             it[updatedAt] = Instant.now()
         } > 0
     }
@@ -371,6 +392,8 @@ class FlashcardRepository {
         definition = row[Flashcards.definition],
         example = row[Flashcards.example],
         senseId = row[Flashcards.senseId],
+        phonetic = row[Flashcards.phonetic],
+        audioUrl = row[Flashcards.audioUrl],
         easeFactor = row[Flashcards.easeFactor],
         repetitions = row[Flashcards.repetitions],
         interval = row[Flashcards.interval],

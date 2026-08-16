@@ -143,7 +143,9 @@ private suspend fun SavedWordRepository.saveFrom(
                 senseId = pinned,
                 translation = wording.translation,
                 definition = wording.definition,
-                example = wording.example
+                example = wording.example,
+                phonetic = wording.phonetic,
+                audioUrl = wording.audioUrl
             )
         }.onFailure { savedWordLogger.warn("Could not re-point the card for '$word': ${it.message}") }
     }

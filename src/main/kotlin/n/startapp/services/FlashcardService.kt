@@ -32,6 +32,10 @@ class FlashcardService {
     ): FlashcardDto {
         logger.info("Creating flashcard directly for user $userId: word='$word'")
 
+        // Транскрипцию и запись клиент не присылает: их знает корпус, и знает по частям речи.
+        val sound = runCatching { lexicalEntries.findLatestByLemma(word) }.getOrNull()
+            ?.let { SenseWording.of(it, senseId) }
+
         val flashcard = repository.create(
             userId = userId,
             word = word,
@@ -39,7 +43,9 @@ class FlashcardService {
             definition = definition,
             example = example,
             categoryId = categoryId,
-            senseId = senseId
+            senseId = senseId,
+            phonetic = sound?.phonetic,
+            audioUrl = sound?.audioUrl
         )
 
         return flashcardToDto(flashcard)
@@ -196,6 +202,49 @@ class FlashcardService {
     }
 
     /**
+     * Re-reads every card the user has from the corpus, in one pass.
+     *
+     * The listings already refresh what they return, so this exists for the case that motivated
+     * it: cards made before the card format carried a transcription, a recording or a chosen
+     * sense. Those never look wrong enough to edit by hand, so without a deliberate pass they
+     * simply stay old — and the deck ends up half in one format and half in another.
+     *
+     * ⚠️ Hand-edited cards are skipped unless [includeCustomized] is set. `customized` means the
+     * wording is the user's own, and a bulk regeneration is exactly the operation that would
+     * quietly throw it away.
+     */
+    suspend fun regenerate(userId: Int, includeCustomized: Boolean = false): RegenerateResult {
+        val all = repository.getAllByUser(userId, null)
+        val (editable, protectedCards) =
+            if (includeCustomized) all to emptyList()
+            else all.partition { !it.customized }
+
+        val refreshed = refreshFromCorpus(editable, force = includeCustomized)
+        val changed = refreshed.count { fresh ->
+            val before = editable.first { it.id == fresh.id }
+            fresh.definition != before.definition || fresh.translation != before.translation ||
+                fresh.example != before.example || fresh.phonetic != before.phonetic ||
+                fresh.audioUrl != before.audioUrl
+        }
+        // Слово, статьи которого ещё нет в корпусе, обновить неоткуда — это не ошибка,
+        // но и не «готово»: карточка останется в прежнем виде, пока статью не построят.
+        val withoutArticle = editable.count { card ->
+            refreshed.first { it.id == card.id }.let { it.phonetic == null && it.definition == card.definition }
+        }
+
+        logger.info(
+            "User $userId regenerated ${changed}/${editable.size} cards " +
+                "(skipped ${protectedCards.size} hand-edited)"
+        )
+        return RegenerateResult(
+            total = all.size,
+            updated = changed,
+            skippedCustomized = protectedCards.size,
+            withoutArticle = withoutArticle
+        )
+    }
+
+    /**
      * Get statistics about user's flashcards
      */
     suspend fun getStatistics(userId: Int, categoryId: Int? = null): FlashcardStatistics {
@@ -224,6 +273,8 @@ class FlashcardService {
             translation = flashcard.translation,
             definition = flashcard.definition,
             example = flashcard.example,
+            phonetic = flashcard.phonetic,
+            audioUrl = flashcard.audioUrl,
             senseId = flashcard.senseId,
             categoryId = flashcard.categoryId,
             customized = flashcard.customized,
@@ -249,13 +300,16 @@ class FlashcardService {
      * Applied to the due list rather than to every list: it is bounded by what
      * the user is about to see, and that is exactly the text that matters.
      */
-    private suspend fun refreshFromCorpus(cards: List<Flashcard>): List<Flashcard> {
+    private suspend fun refreshFromCorpus(
+        cards: List<Flashcard>,
+        force: Boolean = false
+    ): List<Flashcard> {
         if (cards.isEmpty()) return cards
 
         // A card the user edited by hand is theirs. Re-reading it from the dictionary here
         // would undo the edit on the very next study session, which is exactly the moment they
         // would see it — so hand-edited cards are excluded before any lookup happens.
-        val refreshable = cards.filterNot { it.customized }
+        val refreshable = if (force) cards else cards.filterNot { it.customized }
         if (refreshable.isEmpty()) return cards
 
         val entries = try {
@@ -267,7 +321,7 @@ class FlashcardService {
         }
 
         return cards.map { card ->
-            if (card.customized) return@map card
+            if (card.customized && !force) return@map card
             // По значению, к которому карточку привязали, а не по первому в статье: без этого
             // обновление из корпуса молча переписывало бы выбранный человеком смысл на другой.
             val fresh = entries[card.word.trim().lowercase()]?.let { SenseWording.of(it, card.senseId) }
@@ -275,16 +329,36 @@ class FlashcardService {
 
             val definitionChanged = fresh.definition != null && fresh.definition != card.definition
             val translationChanged = fresh.translation.isNotBlank() && fresh.translation != card.translation
-            if (!definitionChanged && !translationChanged) return@map card
+            val exampleChanged = fresh.example != null && fresh.example != card.example
+            // Карточки, заведённые до того, как у них появились транскрипция и запись,
+            // дозаполняются здесь же — иначе «старый формат» жил бы до пересоздания карточки.
+            val soundChanged = fresh.phonetic != card.phonetic || fresh.audioUrl != card.audioUrl
+            if (!definitionChanged && !translationChanged && !exampleChanged && !soundChanged) {
+                return@map card
+            }
 
             val translation = if (translationChanged) fresh.translation else card.translation
             val definition = if (definitionChanged) fresh.definition else card.definition
             val example = fresh.example ?: card.example
 
             try {
-                repository.updateContent(card.id, translation, definition, example)
+                repository.updateContent(
+                    cardId = card.id,
+                    translation = translation,
+                    definition = definition,
+                    example = example,
+                    rewritePronunciation = true,
+                    phonetic = fresh.phonetic,
+                    audioUrl = fresh.audioUrl
+                )
                 logger.info("Refreshed card ${card.id} ('${card.word}') from the corpus")
-                card.copy(translation = translation, definition = definition, example = example)
+                card.copy(
+                    translation = translation,
+                    definition = definition,
+                    example = example,
+                    phonetic = fresh.phonetic,
+                    audioUrl = fresh.audioUrl
+                )
             } catch (e: Exception) {
                 logger.warn("Could not refresh card ${card.id}: ${e.message}")
                 card
@@ -293,6 +367,16 @@ class FlashcardService {
     }
 
 }
+
+/** What a deck regeneration did — reported back so a half-updated deck is visible, not silent. */
+@kotlinx.serialization.Serializable
+data class RegenerateResult(
+    val total: Int,
+    val updated: Int,
+    val skippedCustomized: Int,
+    /** Cards whose word has no article in the corpus yet; nothing to regenerate them from. */
+    val withoutArticle: Int
+)
 
 /**
  * Flashcard statistics for user dashboard

@@ -1,6 +1,8 @@
 package n.startapp.services.lexical
 
+import n.startapp.models.dictionary.PronunciationEntry
 import n.startapp.models.lexical.LexicalEntry
+import n.startapp.models.lexical.PosGroup
 import n.startapp.models.lexical.Sense
 
 /**
@@ -22,7 +24,10 @@ object SenseWording {
         val senseId: String,
         val translation: String,
         val definition: String?,
-        val example: String?
+        val example: String?,
+        /** IPA for *this* sense's part of speech — see [pronunciationFor]. */
+        val phonetic: String? = null,
+        val audioUrl: String? = null
     )
 
     /**
@@ -36,8 +41,38 @@ object SenseWording {
             .firstOrNull { it.id == senseId }
     }
 
+    /** The part-of-speech group a sense belongs to. */
+    fun groupOf(entry: LexicalEntry, senseId: String?): PosGroup? {
+        if (senseId.isNullOrBlank()) return entry.posGroups.firstOrNull()
+        return entry.posGroups.firstOrNull { group -> group.senses.any { it.id == senseId } }
+    }
+
+    /**
+     * How the word sounds in this sense.
+     *
+     * ⚠️ Taken from the sense's own part-of-speech group before the entry-wide fields, because
+     * that is the whole reason the annotation layer keeps pronunciations per group: `lead`,
+     * `bow`, `read`, `live` and `close` are different words to the ear. A card that says
+     * "resolve" the noun must not play the verb's recording.
+     *
+     * UK first only to be deterministic — a card shows one pronunciation, and picking a
+     * different one on each refresh would make the card look like it kept changing.
+     */
+    private fun pronunciationFor(entry: LexicalEntry, group: PosGroup?): PronunciationEntry? {
+        val ordered = listOf("uk", "us")
+        fun pick(list: List<PronunciationEntry>): PronunciationEntry? =
+            ordered.firstNotNullOfOrNull { region ->
+                list.firstOrNull { it.region.equals(region, ignoreCase = true) && !it.ipa.isNullOrBlank() }
+            } ?: list.firstOrNull { !it.ipa.isNullOrBlank() }
+                ?: list.firstOrNull { !it.audioMp3Url.isNullOrBlank() }
+
+        return pick(group?.pronunciations.orEmpty()) ?: pick(entry.pronunciations)
+    }
+
     fun of(entry: LexicalEntry, senseId: String?): Wording? =
         senseOf(entry, senseId)?.let { sense ->
+            val group = groupOf(entry, senseId)
+            val pronunciation = pronunciationFor(entry, group)
             Wording(
                 senseId = sense.id,
                 translation = sense.translationsRu.joinToString(", ").trim(),
@@ -46,7 +81,11 @@ object SenseWording {
                 // ничего, кроме заголовка.
                 definition = sense.definitionEn.takeIf { it.isNotBlank() }
                     ?: sense.definitionRu.takeIf { it.isNotBlank() },
-                example = sense.examples.firstOrNull()?.en?.takeIf { it.isNotBlank() }
+                example = sense.examples.firstOrNull()?.en?.takeIf { it.isNotBlank() },
+                phonetic = pronunciation?.ipa?.takeIf { it.isNotBlank() }
+                    ?: entry.phonetic?.takeIf { it.isNotBlank() },
+                audioUrl = pronunciation?.audioMp3Url?.takeIf { it.isNotBlank() }
+                    ?: entry.audioUrl?.takeIf { it.isNotBlank() }
             )
         }
 }

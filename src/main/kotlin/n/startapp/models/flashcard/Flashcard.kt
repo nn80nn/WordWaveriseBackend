@@ -18,6 +18,15 @@ data class Flashcard(
     val example: String?,
     /** The sense of the article this card is about, inherited from the saved word. */
     val senseId: String? = null,
+    /**
+     * How the word sounds, for this card's part of speech.
+     *
+     * A card meets the word without its article, so the transcription and the recording have to
+     * travel on the card itself — otherwise its front can only show letters, and the sound is
+     * precisely what English spelling hides.
+     */
+    val phonetic: String? = null,
+    val audioUrl: String? = null,
     val easeFactor: Float,
     val repetitions: Int,
     val interval: Int, // Days until next review
@@ -45,6 +54,8 @@ data class FlashcardDto(
     val example: String?,
     /** Which sense of the article the card is about, when the user pinned one. */
     val senseId: String? = null,
+    val phonetic: String? = null,
+    val audioUrl: String? = null,
     val categoryId: Int? = null,
     val customized: Boolean = false,
     /** Consecutive correct reviews — what the clients render as a progress dot row. */
