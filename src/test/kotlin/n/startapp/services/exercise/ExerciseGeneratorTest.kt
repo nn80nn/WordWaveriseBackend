@@ -68,13 +68,67 @@ class ExerciseGeneratorTest {
         translation: String? = null,
         definition: String? = null,
         entry: LexicalEntry? = null,
-        example: String? = null
+        example: String? = null,
+        senseId: String? = null
     ) = PracticeWord(
         word = w,
         translation = translation,
         definition = definition,
         example = example,
+        senseId = senseId,
         entry = entry
+    )
+
+    /**
+     * One headword, two meanings that share nothing — a noun and a verb, each with its own
+     * examples, collocations and inflections. Exactly the shape a pin exists for.
+     */
+    private fun twoSenseEntry() = LexicalEntry(
+        lemma = "resolve",
+        posGroups = listOf(
+            PosGroup(
+                pos = "noun",
+                posRu = "существительное",
+                forms = InflectedForms(plural = "resolves"),
+                senses = listOf(
+                    Sense(
+                        id = "n1",
+                        definitionEn = "firm determination to do something",
+                        definitionRu = "твёрдая решимость",
+                        translationsRu = listOf("решимость"),
+                        examples = listOf(
+                            BilingualExample(
+                                en = "The setback only strengthened her resolve.",
+                                ru = "Неудача лишь укрепила её решимость."
+                            )
+                        ),
+                        collocations = listOf(Collocation(pattern = "strengthen one's resolve")),
+                        synonyms = listOf("determination")
+                    )
+                )
+            ),
+            PosGroup(
+                pos = "verb",
+                posRu = "глагол",
+                forms = InflectedForms(past = "resolved", presentParticiple = "resolving"),
+                senses = listOf(
+                    Sense(
+                        id = "v1",
+                        definitionEn = "to find a solution to a problem",
+                        definitionRu = "найти решение",
+                        translationsRu = listOf("решать"),
+                        examples = listOf(
+                            BilingualExample(
+                                en = "They resolved the dispute without going to court.",
+                                ru = "Они разрешили спор, не доводя дело до суда."
+                            )
+                        ),
+                        collocations = listOf(Collocation(pattern = "resolve a dispute")),
+                        synonyms = listOf("settle")
+                    )
+                )
+            )
+        )
     )
 
     /** Four words with four distinct meanings — the minimum any choice question needs. */
@@ -365,5 +419,91 @@ class ExerciseGeneratorTest {
     fun `a word with no recording produces no listening question`() {
         val target = word("resolve", translation = "решать", entry = entry("resolve"))
         assertNull(ExerciseGenerator.build(target, listOf(target), ExerciseKind.LISTENING, random))
+    }
+
+    // ── The pinned sense ──────────────────────────────────────────────────────
+
+    @Test
+    fun `a pinned word is asked about the sense the user chose`() {
+        val target = word("resolve", entry = twoSenseEntry(), senseId = "n1")
+
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.TRANSLATE_EN_RU, random)
+        )
+
+        assertEquals("решимость", exercise.answer)
+        // Второе значение статьи всё равно засчитывается: у слова несколько верных переводов,
+        // и настаивать на одном — быстрейший способ научить не доверять упражнению.
+        assertTrue(exercise.acceptedAnswers.contains("решать"))
+    }
+
+    @Test
+    fun `an unpinned word still leads with the article's first sense`() {
+        val target = word("resolve", entry = twoSenseEntry())
+
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.TRANSLATE_EN_RU, random)
+        )
+
+        assertEquals("решимость", exercise.answer)
+    }
+
+    @Test
+    fun `a pinned verb is drilled on verb forms, never on the noun's plural`() {
+        val target = word("resolve", entry = twoSenseEntry(), senseId = "v1")
+
+        val exercise = assertNotNull(
+            ExerciseGenerator.build(target, listOf(target), ExerciseKind.WORD_FORM, random)
+        )
+
+        assertTrue(
+            exercise.answer in setOf("resolved", "resolving"),
+            "a verb sense must not be asked for the noun plural: got ${exercise.answer}"
+        )
+    }
+
+    @Test
+    fun `a pinned sense borrows neither examples nor collocations from the other one`() {
+        val target = word("resolve", entry = twoSenseEntry(), senseId = "n1")
+        val pool = listOf(target) + pool().filter { it.word != "resolve" }
+
+        val blank = assertNotNull(
+            ExerciseGenerator.build(target, pool, ExerciseKind.FILL_BLANK, random)
+        )
+        assertTrue(
+            blank.question.contains("setback"),
+            "the sentence must come from the pinned sense: ${blank.question}"
+        )
+
+        val collocation = assertNotNull(
+            ExerciseGenerator.build(target, pool, ExerciseKind.COLLOCATION, random)
+        )
+        assertTrue(
+            collocation.question.contains("strengthen"),
+            "the collocation must belong to the pinned sense: ${collocation.question}"
+        )
+    }
+
+    @Test
+    fun `a pin the article no longer carries borrows nothing from the corpus`() {
+        // Откат на первое значение спрашивал бы о смысле, которого человек не выбирал, тогда
+        // как его собственная карточка показывает другой. Текст карточки при этом работает.
+        val target = word(
+            "resolve",
+            translation = "разлагать",
+            definition = "to separate into constituent parts",
+            entry = twoSenseEntry(),
+            senseId = "v9"
+        )
+        val pool = listOf(target) + pool().filter { it.word != "resolve" }
+
+        assertNull(ExerciseGenerator.build(target, pool, ExerciseKind.FILL_BLANK, random))
+        assertNull(ExerciseGenerator.build(target, pool, ExerciseKind.COLLOCATION, random))
+        assertNull(ExerciseGenerator.build(target, pool, ExerciseKind.WORD_FORM, random))
+
+        val typed = assertNotNull(
+            ExerciseGenerator.build(target, pool, ExerciseKind.TRANSLATE_EN_RU, random)
+        )
+        assertEquals("разлагать", typed.answer)
     }
 }

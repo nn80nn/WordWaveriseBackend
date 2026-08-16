@@ -6,6 +6,8 @@ import n.startapp.models.exercise.ExerciseFormat
 import n.startapp.models.exercise.ExerciseKind
 import n.startapp.models.exercise.ExerciseSource
 import n.startapp.models.lexical.LexicalEntry
+import n.startapp.models.lexical.PosGroup
+import n.startapp.models.lexical.Sense
 import kotlin.random.Random
 
 /**
@@ -19,6 +21,14 @@ data class PracticeWord(
     val example: String? = null,
     val cardId: Int? = null,
     val savedWordId: Int? = null,
+    /**
+     * The sense the user pinned when they saved this word, if they did.
+     *
+     * Without it every question about `resolve` was built from the article's first sense, so
+     * someone who deliberately saved "разлагать" was drilled on "решать" — the exercise quietly
+     * disagreed with their own card.
+     */
+    val senseId: String? = null,
     val entry: LexicalEntry? = null
 ) {
     /** Every written form of the word, longest first — what a sentence might actually contain. */
@@ -115,7 +125,7 @@ object ExerciseGenerator {
             options = options,
             correctIndex = options.indexOf(correct),
             answer = correct,
-            hintRu = target.entry?.posGroups?.firstOrNull()?.posRu,
+            hintRu = groupOf(target)?.posRu,
             explanationRu = target.definition?.let { "Определение: $it" },
             cardId = target.cardId,
             savedWordId = target.savedWordId,
@@ -160,9 +170,10 @@ object ExerciseGenerator {
      * them per sense, so the phrase is one a dictionary actually attested.
      */
     private fun collocation(target: PracticeWord, pool: List<PracticeWord>, random: Random): Exercise? {
-        val entry = target.entry ?: return null
-        val candidate = entry.posGroups.asSequence()
-            .flatMap { it.senses.asSequence() }
+        if (target.entry == null) return null
+        // Коллокации принадлежат значению: «resolve a dispute» — это не то же слово, что
+        // «resolve into components», и брать чужую пару значило бы спрашивать о другом смысле.
+        val candidate = sensesOf(target).asSequence()
             .flatMap { it.collocations.asSequence() }
             .firstOrNull { collo -> containsAnyForm(collo.pattern, target.forms) }
             ?: return null
@@ -246,7 +257,9 @@ object ExerciseGenerator {
      */
     private fun translateEnRu(target: PracticeWord): Exercise? {
         val all = allRussianOf(target)
-        val primary = all.firstOrNull() ?: return null
+        // Показываем и засчитываем первым то значение, которое человек выбрал; остальные
+        // значения статьи всё равно принимаются — см. `acceptedAnswers` ниже.
+        val primary = primaryRussianOf(target) ?: all.firstOrNull() ?: return null
 
         return Exercise(
             id = id(target, ExerciseKind.TRANSLATE_EN_RU),
@@ -256,8 +269,10 @@ object ExerciseGenerator {
             promptRu = "Напишите значение по-русски",
             question = target.word,
             answer = primary,
-            acceptedAnswers = all.drop(1),
-            hintRu = target.entry?.posGroups?.firstOrNull()?.posRu,
+            acceptedAnswers = all.filterNot {
+                ExerciseGrading.normalize(it) == ExerciseGrading.normalize(primary)
+            },
+            hintRu = groupOf(target)?.posRu,
             explanationRu = listOfNotNull(
                 all.takeIf { it.size > 1 }?.joinToString(", ")?.let { "Подходит любое: $it" },
                 target.definition
@@ -276,10 +291,9 @@ object ExerciseGenerator {
      * wrong but what the sentence said.
      */
     private fun fillBlank(target: PracticeWord): Exercise? {
-        val bilingual = target.entry?.posGroups
-            ?.flatMap { it.senses }
-            ?.flatMap { it.examples }
-            ?.firstOrNull { containsAnyForm(it.en, target.forms) }
+        val bilingual = sensesOf(target)
+            .flatMap { it.examples }
+            .firstOrNull { containsAnyForm(it.en, target.forms) }
 
         val sentence = bilingual?.en ?: target.example?.takeIf { containsAnyForm(it, target.forms) }
         ?: return null
@@ -307,9 +321,12 @@ object ExerciseGenerator {
 
     /** Inflection, drilled from the forms the annotation layer already derived and verified. */
     private fun wordForm(target: PracticeWord, random: Random): Exercise? {
-        val group = target.entry?.posGroups?.firstOrNull { it.forms?.all()?.isNotEmpty() == true }
-            ?: return null
-        val forms = group.forms ?: return null
+        // Слово без пина берёт первую группу, у которой вообще есть формы; с пином —
+        // только свою: у существительного множественное число, у глагола прошедшее время.
+        val group = if (target.senseId.isNullOrBlank())
+            target.entry?.posGroups?.firstOrNull { it.forms?.all()?.isNotEmpty() == true }
+        else groupOf(target)
+        val forms = group?.forms?.takeIf { it.all().isNotEmpty() } ?: return null
 
         val options = listOfNotNull(
             forms.plural?.let { "множественное число" to it },
@@ -388,14 +405,56 @@ object ExerciseGenerator {
         )
     }
 
+    // ── Which sense a question is about ───────────────────────────────────────
+
+    /**
+     * The senses a question may be built from: the pinned one alone, or the whole article.
+     *
+     * ⚠️ A pin the article no longer carries yields **nothing**, not the first sense. Dropping
+     * back would build the question from a meaning the user never chose while their own card
+     * still shows the one they did — the two would contradict each other, and nothing on screen
+     * would explain why. The card's stored wording still feeds the kinds that need only text,
+     * so such a word keeps practising; it just stops borrowing another sense's material.
+     */
+    private fun sensesOf(word: PracticeWord): List<Sense> {
+        val entry = word.entry ?: return emptyList()
+        val pinned = word.senseId?.takeIf { it.isNotBlank() }
+            ?: return entry.posGroups.flatMap { it.senses }
+        return entry.posGroups.asSequence()
+            .flatMap { it.senses.asSequence() }
+            .filter { it.id == pinned }
+            .toList()
+    }
+
+    /** The sense a question is *primarily* about: the pinned one, else the article's first. */
+    private fun primarySense(word: PracticeWord): Sense? =
+        if (word.senseId.isNullOrBlank()) word.entry?.posGroups?.firstOrNull()?.senses?.firstOrNull()
+        else sensesOf(word).firstOrNull()
+
+    /**
+     * The part-of-speech group the question belongs to.
+     *
+     * Homographs make this load-bearing: `resolve` the noun takes a plural, `resolve` the verb
+     * takes a past tense, and drilling one against the other's forms is simply wrong.
+     */
+    private fun groupOf(word: PracticeWord): PosGroup? {
+        val entry = word.entry ?: return null
+        val pinned = word.senseId?.takeIf { it.isNotBlank() } ?: return entry.posGroups.firstOrNull()
+        return entry.posGroups.firstOrNull { group -> group.senses.any { it.id == pinned } }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /** The Russian side of a word: the corpus sense first, the card's own wording second. */
     fun russianOf(word: PracticeWord): String? {
-        val fromEntry = word.entry?.posGroups?.firstOrNull()?.senses?.firstOrNull()
+        val fromEntry = primarySense(word)
             ?.translationsRu?.take(3)?.joinToString(", ")?.takeIf { it.isNotBlank() }
         return fromEntry ?: word.translation?.trim()?.takeIf { it.isNotBlank() }
     }
+
+    /** One equivalent, not a list — what a typed answer is graded against first. */
+    private fun primaryRussianOf(word: PracticeWord): String? =
+        russianOf(word)?.let { splitMeanings(it).firstOrNull() ?: it }
 
     /**
      * Every Russian equivalent the article records, across every part of speech and every sense
@@ -455,15 +514,14 @@ object ExerciseGenerator {
     }
 
     private fun synonymsOf(word: PracticeWord): Set<String> =
-        word.entry?.posGroups.orEmpty()
-            .flatMap { it.senses }
+        sensesOf(word)
             .flatMap { it.synonyms }
             .map { it.trim().lowercase() }
             .filter { it.isNotBlank() }
             .toSet()
 
     private fun posOf(word: PracticeWord): String? =
-        word.entry?.posGroups?.firstOrNull()?.pos?.trim()?.lowercase()
+        groupOf(word)?.pos?.trim()?.lowercase()
 
     /** The recording, wherever the article happens to keep it. */
     private fun audioOf(word: PracticeWord): String? {

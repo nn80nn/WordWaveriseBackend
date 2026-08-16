@@ -15,6 +15,7 @@ import n.startapp.models.auth.SaveWordRequest
 import n.startapp.models.auth.SavedWord
 import n.startapp.models.auth.SavedWordsResponse
 import n.startapp.models.auth.toDTO
+import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.repositories.SavedWordRepository
 import n.startapp.services.SavedWordEnrichment
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory
 
 fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
     val savedWordRepository = SavedWordRepository()
+    val flashcardRepository = FlashcardRepository()
 
     authenticate("auth-jwt") {
         route("/api/words") {
@@ -31,7 +33,7 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
                 post {
                     val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                     val request = call.receive<SaveWordRequest>()
-                    val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries)
+                    val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries, flashcardRepository)
 
                     call.respond(
                         HttpStatusCode.Created,
@@ -74,7 +76,7 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
             post("/save") {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                 val request = call.receive<SaveWordRequest>()
-                val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries)
+                val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries, flashcardRepository)
 
                 call.respond(
                     ApiResponse.success(savedWord.toDTO())
@@ -107,7 +109,8 @@ private val savedWordLogger = LoggerFactory.getLogger("SavedWordsRoutes")
 private suspend fun SavedWordRepository.saveFrom(
     request: SaveWordRequest,
     userId: Int,
-    lexicalEntries: LexicalEntryRepository
+    lexicalEntries: LexicalEntryRepository,
+    flashcards: FlashcardRepository
 ): SavedWord {
     if (request.word.isBlank()) throw BadRequestException("Word cannot be empty")
 
@@ -121,7 +124,7 @@ private suspend fun SavedWordRepository.saveFrom(
             ?.let { SenseWording.of(it, senseId) }
     }
 
-    return save(
+    val saved = save(
         userId = userId,
         word = word,
         translation = wording?.translation?.takeIf { it.isNotBlank() } ?: request.translation,
@@ -129,6 +132,23 @@ private suspend fun SavedWordRepository.saveFrom(
         example = wording?.example,
         senseId = pinned
     ) ?: throw Exception("Failed to save word")
+
+    // Карточка этого слова могла быть создана раньше — и по другому значению. Оставить её как
+    // есть значило бы, что список слов и повторение спорят друг с другом.
+    if (pinned != null && wording != null) {
+        runCatching {
+            flashcards.repinToSense(
+                userId = userId,
+                word = word,
+                senseId = pinned,
+                translation = wording.translation,
+                definition = wording.definition,
+                example = wording.example
+            )
+        }.onFailure { savedWordLogger.warn("Could not re-point the card for '$word': ${it.message}") }
+    }
+
+    return saved
 }
 
 

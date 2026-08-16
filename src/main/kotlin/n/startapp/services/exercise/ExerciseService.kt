@@ -217,9 +217,12 @@ class ExerciseService(
                         word = saved.word,
                         translation = card?.translation?.takeIf { it.isNotBlank() } ?: saved.translation,
                         definition = card?.definition ?: saved.definition,
-                        example = card?.example,
+                        example = card?.example ?: saved.example,
                         cardId = card?.id,
-                        savedWordId = saved.id
+                        savedWordId = saved.id,
+                        // Карточка могла быть перепривязана отдельно от слова, поэтому её
+                        // выбор главнее: упражнение обязано спрашивать ровно то, что на ней.
+                        senseId = card?.senseId ?: saved.senseId
                     )
                 }
 
@@ -230,7 +233,8 @@ class ExerciseService(
                     definition = card.definition,
                     example = card.example,
                     cardId = card.id,
-                    savedWordId = card.savedWordId
+                    savedWordId = card.savedWordId,
+                    senseId = card.senseId
                 )
             }
         }
@@ -261,7 +265,7 @@ class ExerciseService(
 
         // Cached words first: they cost a single indexed read and can fill the batch on their own.
         val cached = candidates.mapNotNull { word ->
-            cache?.get(cacheKey(word.word))?.let { payload -> word to payload }
+            cache?.get(cacheKey(word))?.let { payload -> word to payload }
         }
         val cachedWords = cached.map { it.first.word.lowercase() }.toSet()
         val fresh = candidates.filter { it.word.lowercase() !in cachedWords }.take(MAX_FRESH_AI)
@@ -279,12 +283,16 @@ class ExerciseService(
 
     private suspend fun generateContext(word: PracticeWord): ContextDraft? {
         val entry = word.entry ?: return null
-        val sense = entry.posGroups.firstOrNull()?.senses?.firstOrNull()
-        val synonyms = entry.posGroups.flatMap { it.senses }.flatMap { it.synonyms }.distinct().take(6)
+        // Ровно то значение, которое человек выбрал: «предложение, куда подходит только это
+        // слово» для «решать» и для «разлагать» — это два разных предложения.
+        val group = senseGroup(word)
+        val sense = group?.senses?.firstOrNull { word.senseId.isNullOrBlank() || it.id == word.senseId }
+        val synonyms = (sense?.synonyms ?: entry.posGroups.flatMap { it.senses }.flatMap { it.synonyms })
+            .distinct().take(6)
 
         val prompt = buildString {
             appendLine("СЛОВО: ${word.word}")
-            entry.posGroups.firstOrNull()?.let { appendLine("ЧАСТЬ РЕЧИ: ${it.pos}") }
+            group?.let { appendLine("ЧАСТЬ РЕЧИ: ${it.pos}") }
             sense?.let {
                 appendLine("ЗНАЧЕНИЕ (en): ${it.definitionEn}")
                 if (it.definitionRu.isNotBlank()) appendLine("ЗНАЧЕНИЕ (ru): ${it.definitionRu}")
@@ -312,7 +320,7 @@ class ExerciseService(
                 // Cached without expiry: the sentence is about the word, not about the user,
                 // so every learner with this word gets it for free from here on.
                 cache?.put(
-                    cacheKey(word.word), "exercise_context", payload,
+                    cacheKey(word), "exercise_context", payload,
                     result.model, PROMPT_VERSION_CONTEXT, result.usage
                 )
             }
@@ -367,8 +375,26 @@ class ExerciseService(
         )
     }
 
-    private fun cacheKey(word: String) =
-        LlmCacheRepository.key("exercise_context", PROMPT_VERSION_CONTEXT, word.trim().lowercase())
+    /**
+     * ⚠️ The pinned sense is part of the key. The sentence is cached forever because it is about
+     * the word rather than the user — but it is about *one meaning* of the word, and keying on
+     * the headword alone would serve the sentence written for "решать" to someone practising
+     * "разлагать", permanently and invisibly.
+     */
+    private fun cacheKey(word: PracticeWord): String {
+        val sense = word.senseId?.trim()?.takeIf { it.isNotEmpty() }
+        val subject = if (sense == null) word.word.trim().lowercase()
+        else "${word.word.trim().lowercase()}#$sense"
+        return LlmCacheRepository.key("exercise_context", PROMPT_VERSION_CONTEXT, subject)
+    }
+
+    /** The part-of-speech group the pin belongs to, or the article's first. */
+    private fun senseGroup(word: PracticeWord): n.startapp.models.lexical.PosGroup? {
+        val entry = word.entry ?: return null
+        val pinned = word.senseId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return entry.posGroups.firstOrNull()
+        return entry.posGroups.firstOrNull { group -> group.senses.any { it.id == pinned } }
+    }
 
     // ── Assembly ──────────────────────────────────────────────────────────────
 

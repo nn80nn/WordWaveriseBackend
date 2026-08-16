@@ -84,6 +84,40 @@ class FlashcardRepository {
         } > 0
     }
 
+    /**
+     * Re-points the card for [word] at another sense, and rewrites what it says.
+     *
+     * Choosing a different meaning for a saved word has to reach its card, or the two disagree:
+     * the list shows "разлагать" while the card still drills "решать", and the next review
+     * teaches the meaning the user just rejected.
+     *
+     * ⚠️ A hand-edited card is left alone. `customized` means the wording is the user's own, and
+     * it outranks anything derived — the same rule the corpus refresh follows.
+     *
+     * The schedule is untouched: this changes what a card says, not what it has learned about
+     * the learner.
+     */
+    suspend fun repinToSense(
+        userId: Int,
+        word: String,
+        senseId: String,
+        translation: String?,
+        definition: String?,
+        example: String?
+    ): Boolean = dbQuery {
+        Flashcards.update({
+            (Flashcards.userId eq userId) and
+                (Flashcards.word.lowerCase() eq word.trim().lowercase()) and
+                (Flashcards.customized eq false)
+        }) {
+            it[Flashcards.senseId] = senseId
+            if (!translation.isNullOrBlank()) it[Flashcards.translation] = translation
+            it[Flashcards.definition] = definition
+            it[Flashcards.example] = example
+            it[updatedAt] = Instant.now()
+        } > 0
+    }
+
     /** Moves a card between folders without touching its schedule or its wording. */
     suspend fun setCategory(cardId: Int, userId: Int, categoryId: Int?): Boolean = dbQuery {
         Flashcards.update({ (Flashcards.id eq cardId) and (Flashcards.userId eq userId) }) {
