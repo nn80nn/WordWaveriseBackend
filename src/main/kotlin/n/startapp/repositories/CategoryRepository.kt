@@ -5,6 +5,7 @@ import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.CategoryDTO
+import n.startapp.utils.ShortToken
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 
@@ -129,11 +130,7 @@ class CategoryRepository {
             .first { it.lowercase() !in taken }
     }
 
-    private fun newToken(): String {
-        val alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
-        val random = java.security.SecureRandom()
-        return (1..12).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
-    }
+    private fun newToken(): String = ShortToken.generate(12)
 
     suspend fun exists(userId: Int, categoryId: Int): Boolean = dbQuery {
         Categories.selectAll()

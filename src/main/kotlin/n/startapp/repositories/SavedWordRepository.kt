@@ -89,14 +89,19 @@ class SavedWordRepository {
      *
      * Only ever called with values that were blank on the row, so this cannot overwrite
      * anything a user put there.
+     *
+     * ⚠️ [userId] is not decoration. This runs while rendering a saved-words list, and that list
+     * now includes words reached through a group — which belong to the teacher. Without the
+     * guard, opening the list would write into another account's rows.
      */
     suspend fun updateContent(
         id: Int,
+        userId: Int,
         translation: String?,
         definition: String?,
         example: String? = null
     ): Boolean = dbQuery {
-        SavedWords.update({ SavedWords.id eq id }) {
+        SavedWords.update({ (SavedWords.id eq id) and (SavedWords.userId eq userId) }) {
             it[SavedWords.translation] = translation?.take(500)
             it[SavedWords.definition] = definition
             if (example != null) it[SavedWords.example] = example
@@ -172,6 +177,32 @@ class SavedWordRepository {
             added++
         }
         added to alreadyHad
+    }
+
+    /**
+     * Every word this owner has filed in any of [categoryIds].
+     *
+     * Reads somebody else's rows on purpose: under a group the folder stays the teacher's, and
+     * the student reads through to it rather than getting a copy.
+     */
+    suspend fun findByCategoryIds(ownerId: Int, categoryIds: Collection<Int>): List<SavedWord> = dbQuery {
+        if (categoryIds.isEmpty()) return@dbQuery emptyList()
+        SavedWords.selectAll()
+            .where { (SavedWords.userId eq ownerId) and (SavedWords.categoryId inList categoryIds) }
+            .orderBy(SavedWords.savedAt to SortOrder.DESC)
+            .map(::resultRowToSavedWord)
+    }
+
+    /** How many words each of the user's folders holds. Words filed nowhere are not counted. */
+    suspend fun countByCategory(userId: Int): Map<Int, Int> = dbQuery {
+        SavedWords
+            .select(SavedWords.categoryId, SavedWords.id.count())
+            .where { SavedWords.userId eq userId }
+            .groupBy(SavedWords.categoryId)
+            .mapNotNull { row ->
+                row[SavedWords.categoryId]?.let { it to row[SavedWords.id.count()].toInt() }
+            }
+            .toMap()
     }
 
     suspend fun exists(userId: Int, word: String): Boolean = dbQuery {

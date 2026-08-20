@@ -4,13 +4,18 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
 import n.startapp.database.tables.AppSettings
+import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.LexicalEntries
 import n.startapp.database.tables.LlmCache
+import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.PushSubscriptions
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
+import n.startapp.database.tables.StudyGroupFolders
+import n.startapp.database.tables.StudyGroupMembers
+import n.startapp.database.tables.StudyGroups
 import n.startapp.database.tables.TestingRequests
 import n.startapp.database.tables.Users
 import n.startapp.database.tables.WarmupQueue
@@ -59,7 +64,10 @@ object DatabaseFactory {
                 println("📋 Creating database tables if they don't exist...")
                 SchemaUtils.createMissingTablesAndColumns(
                     Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests,
-                    LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions
+                    LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
+                    // Parents before children: every one of these references a table above it.
+                    StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments,
+                    PracticeAttempts
                 )
                 println("✅ Database tables ready")
             }

@@ -21,6 +21,8 @@ import n.startapp.models.auth.UpdateCategoryRequest
 import n.startapp.repositories.CategoryRepository
 import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.SavedWordRepository
+import n.startapp.services.group.FolderAccessResolver
+import n.startapp.services.group.FolderCatalog
 
 private val categoryLogger = org.slf4j.LoggerFactory.getLogger("CategoryRoutes")
 
@@ -28,15 +30,16 @@ fun Route.categoryRoutes() {
     val categoryRepository = CategoryRepository()
     val savedWordRepository = SavedWordRepository()
     val flashcardRepository = FlashcardRepository()
+    val folderCatalog = FolderCatalog(FolderAccessResolver(), savedWordRepository)
 
     authenticate("auth-jwt") {
         route("/api/categories") {
 
-            // List all categories for the user
+            // Own folders, then the ones groups lend. A borrowed folder is marked readOnly and
+            // counts the words its owner has in it, not the reader's.
             get {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
-                val categories = categoryRepository.findByUserId(userId)
-                call.respond(ApiResponse.success(categories))
+                call.respond(ApiResponse.success(folderCatalog.foldersFor(userId)))
             }
 
             // Create a new category

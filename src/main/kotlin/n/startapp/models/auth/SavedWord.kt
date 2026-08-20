@@ -31,7 +31,16 @@ data class SavedWordDTO(
     val savedAt: String,
     val categoryId: Int? = null,
     val example: String? = null,
-    val senseId: String? = null
+    val senseId: String? = null,
+
+    /**
+     * Set when the word reaches this reader through a group folder instead of being their own.
+     *
+     * ⚠️ A read-only word must not offer delete or "move to folder" in any client: both of those
+     * are keyed by the headword, so they would land on the reader's own row for the same word.
+     */
+    val groupId: Int? = null,
+    val readOnly: Boolean = false
 )
 
 /**
@@ -70,7 +79,7 @@ data class SavedWordsResponse(
 /**
  * Convert SavedWord to SavedWordDTO
  */
-fun SavedWord.toDTO(): SavedWordDTO = SavedWordDTO(
+fun SavedWord.toDTO(groupId: Int? = null, readOnly: Boolean = false): SavedWordDTO = SavedWordDTO(
     id = id,
     word = word,
     translation = translation,
@@ -78,5 +87,7 @@ fun SavedWord.toDTO(): SavedWordDTO = SavedWordDTO(
     savedAt = savedAt.toString(),
     categoryId = categoryId,
     example = example,
-    senseId = senseId
+    senseId = senseId,
+    groupId = groupId,
+    readOnly = readOnly
 )

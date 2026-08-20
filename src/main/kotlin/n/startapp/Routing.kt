@@ -23,6 +23,8 @@ import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
 import n.startapp.routes.exerciseRoutes
 import n.startapp.routes.flashcardRoutes
+import n.startapp.routes.groupInviteRoutes
+import n.startapp.routes.groupRoutes
 import n.startapp.routes.contextRoutes
 import n.startapp.routes.lookupRoutes
 import n.startapp.routes.pushRoutes
@@ -151,6 +153,10 @@ fun Application.configureRouting(services: ServiceRegistry) {
         // Category routes (protected)
         categoryRoutes()
         sharedFolderRoutes()
+
+        // Groups: a teacher, their students, the folders and assignments they hand out.
+        groupRoutes()
+        groupInviteRoutes()
 
         // Practice sessions built from a folder (protected)
         exerciseRoutes(services.exerciseService)

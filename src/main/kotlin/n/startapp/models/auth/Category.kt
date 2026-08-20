@@ -16,7 +16,17 @@ data class CategoryDTO(
     val id: Int,
     val name: String,
     val color: String?,
-    val wordCount: Int = 0
+    val wordCount: Int = 0,
+
+    /**
+     * Set when the folder reaches this reader through a group rather than being their own.
+     *
+     * The words stay the teacher's; the reader may study them and build cards from them, and
+     * nothing else. Defaulted so that a client built before groups existed is unaffected.
+     */
+    val groupId: Int? = null,
+    val groupName: String? = null,
+    val readOnly: Boolean = false
 )
 
 @Serializable

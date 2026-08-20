@@ -19,12 +19,15 @@ import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.repositories.SavedWordRepository
 import n.startapp.services.SavedWordEnrichment
+import n.startapp.services.group.FolderAccessResolver
+import n.startapp.services.group.FolderCatalog
 import n.startapp.services.lexical.SenseWording
 import org.slf4j.LoggerFactory
 
 fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
     val savedWordRepository = SavedWordRepository()
     val flashcardRepository = FlashcardRepository()
+    val folderCatalog = FolderCatalog(FolderAccessResolver(), savedWordRepository)
 
     authenticate("auth-jwt") {
         route("/api/words") {
@@ -45,13 +48,18 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
                 get {
                     val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
 
-                    val savedWords = savedWordRepository
-                        .findByUserId(userId)
-                        .withCorpusGapsFilled(lexicalEntries, savedWordRepository)
+                    // Own words first, then whatever the reader's groups lend them.
+                    val visible = folderCatalog.wordsFor(userId)
+                    val filled = visible.map { it.word }
+                        .withCorpusGapsFilled(lexicalEntries, savedWordRepository, userId)
+
                     call.respond(
                         ApiResponse.success(
                             SavedWordsResponse(
-                                words = savedWords.map { it.toDTO() }
+                                words = filled.mapIndexed { index, word ->
+                                    val seenAs = visible[index]
+                                    word.toDTO(groupId = seenAs.groupId, readOnly = seenAs.readOnly)
+                                }
                             )
                         )
                     )
@@ -159,7 +167,8 @@ private suspend fun SavedWordRepository.saveFrom(
  */
 private suspend fun List<SavedWord>.withCorpusGapsFilled(
     lexicalEntries: LexicalEntryRepository,
-    repository: SavedWordRepository
+    repository: SavedWordRepository,
+    userId: Int
 ): List<SavedWord> {
     val gaps = filter {
         it.definition.isNullOrBlank() || it.translation.isNullOrBlank() || it.example.isNullOrBlank()
@@ -179,7 +188,7 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
             ?: return@map saved
 
         runCatching {
-            repository.updateContent(saved.id, filled.translation, filled.definition, filled.example)
+            repository.updateContent(saved.id, userId, filled.translation, filled.definition, filled.example)
         }.onFailure { savedWordLogger.warn("Could not fill saved word ${saved.id}: ${it.message}") }
         saved.copy(
             definition = filled.definition,
