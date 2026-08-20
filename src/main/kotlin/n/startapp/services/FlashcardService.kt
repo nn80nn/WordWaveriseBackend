@@ -5,6 +5,7 @@ import n.startapp.models.flashcard.*
 import n.startapp.services.lexical.SenseWording
 import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.LexicalEntryRepository
+import n.startapp.services.group.FolderAccessResolver
 import n.startapp.utils.SpacedRepetitionAlgorithm
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -17,6 +18,7 @@ class FlashcardService {
     private val logger = LoggerFactory.getLogger(FlashcardService::class.java)
     private val repository = FlashcardRepository()
     private val lexicalEntries = LexicalEntryRepository()
+    private val folderAccess = FolderAccessResolver()
 
     /**
      * Create a flashcard directly
@@ -31,6 +33,10 @@ class FlashcardService {
         senseId: String? = null
     ): FlashcardDto {
         logger.info("Creating flashcard directly for user $userId: word='$word'")
+
+        // The folder has to be one this user can actually reach. Before groups nothing checked
+        // this at all, and a card could be filed under any id the client cared to send.
+        folderAccess.requireCardFolder(userId, categoryId)
 
         // Транскрипцию и запись клиент не присылает: их знает корпус, и знает по частям речи.
         val sound = runCatching { lexicalEntries.findLatestByLemma(word) }.getOrNull()
@@ -83,6 +89,7 @@ class FlashcardService {
     }
 
     suspend fun setCategory(userId: Int, cardId: Int, categoryId: Int?): FlashcardDto {
+        folderAccess.requireCardFolder(userId, categoryId)
         val moved = repository.setCategory(cardId, userId, categoryId)
         if (!moved) throw NotFoundException("Flashcard not found")
         val fresh = repository.getById(cardId, userId) ?: throw NotFoundException("Flashcard not found")
@@ -91,7 +98,13 @@ class FlashcardService {
 
     /** Creates the cards a folder is missing, in one action. */
     suspend fun createMissingFromCategory(userId: Int, categoryId: Int?): BulkCreateFlashcardsResult {
-        val outcome = repository.createMissingFromCategory(userId, categoryId)
+        // A group folder holds the teacher's words; the cards are still the reader's own.
+        val folder = folderAccess.requireCardFolder(userId, categoryId)
+        val outcome = repository.createMissingFromCategory(
+            userId = userId,
+            categoryId = categoryId,
+            contentOwnerId = folder?.contentOwnerId ?: userId
+        )
         logger.info(
             "User $userId filled folder $categoryId: created=${outcome.created}, " +
                 "moved=${outcome.moved}, skipped=${outcome.skipped}"
@@ -109,8 +122,11 @@ class FlashcardService {
     suspend fun createFlashcard(userId: Int, savedWordId: Int): FlashcardDto {
         logger.info("Creating flashcard for user $userId from saved word $savedWordId")
 
-        val flashcard = repository.createFromSavedWord(userId, savedWordId)
-            ?: throw NotFoundException("Saved word not found or doesn't belong to user")
+        val flashcard = repository.createFromSavedWord(
+            userId = userId,
+            savedWordId = savedWordId,
+            reachableFolderIds = folderAccess.groupFolders(userId).keys
+        ) ?: throw NotFoundException("Saved word not found or doesn't belong to user")
 
         return flashcardToDto(flashcard)
     }

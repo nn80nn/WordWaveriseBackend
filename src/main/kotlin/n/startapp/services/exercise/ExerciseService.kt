@@ -26,6 +26,8 @@ import n.startapp.services.ai.LlmJson
 import n.startapp.services.ai.LlmRequest
 import n.startapp.services.ai.LlmModelTier
 import n.startapp.services.ai.ResponseFormat
+import n.startapp.services.group.FolderAccessResolver
+import n.startapp.services.group.FolderCatalog
 import org.slf4j.LoggerFactory
 import kotlin.random.Random
 
@@ -56,7 +58,9 @@ class ExerciseService(
     private val entries: LexicalEntryRepository,
     private val savedWords: SavedWordRepository = SavedWordRepository(),
     private val flashcards: FlashcardRepository = FlashcardRepository(),
-    private val cache: LlmCacheRepository? = null
+    private val cache: LlmCacheRepository? = null,
+    /** What the learner may practise: their own words, plus the ones their groups lend them. */
+    private val folders: FolderCatalog = FolderCatalog(FolderAccessResolver(), savedWords)
 ) {
     private val logger = LoggerFactory.getLogger(ExerciseService::class.java)
     private val json = Json { isLenient = true; ignoreUnknownKeys = true }
@@ -209,7 +213,10 @@ class ExerciseService(
         val cardByWord = cards.associateBy { it.word.trim().lowercase() }
 
         val raw: List<PracticeWord> = when (scope) {
-            ExerciseScope.SAVED -> savedWords.findByUserId(userId)
+            // Not `savedWords.findByUserId`: a folder handed out by a group holds the teacher's
+            // rows, and reading only the learner's own would make that folder practise as empty.
+            ExerciseScope.SAVED -> folders.wordsFor(userId)
+                .map { it.word }
                 .filter { matchesCategory(it.categoryId, categoryId) }
                 .map { saved ->
                     val card = cardByWord[saved.word.trim().lowercase()]

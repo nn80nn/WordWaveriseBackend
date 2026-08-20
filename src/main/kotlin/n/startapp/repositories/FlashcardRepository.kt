@@ -186,20 +186,37 @@ class FlashcardRepository {
         } > 0
     }
 
-    suspend fun createFromSavedWord(userId: Int, savedWordId: Int): Flashcard? = dbQuery {
-        // Get saved word details
+    /**
+     * Makes a card out of a saved word — the reader's own, or one a group lends them.
+     *
+     * A borrowed word is recorded as `savedWordId = null`, never as a pointer to the row it came
+     * from. That row belongs to the teacher, and `SavedWordRepository.delete` only removes the
+     * cards of the word's *owner*: a student's card pointing at it would leave the teacher unable
+     * to delete their own word.
+     *
+     * @param reachableFolderIds folders this reader gets through a group. Anything outside them
+     *   that is not theirs is simply not found.
+     */
+    suspend fun createFromSavedWord(
+        userId: Int,
+        savedWordId: Int,
+        reachableFolderIds: Set<Int> = emptySet()
+    ): Flashcard? = dbQuery {
         val savedWord = SavedWords.select { SavedWords.id eq savedWordId }
             .firstOrNull()
             ?: return@dbQuery null
 
-        // Check if user owns this saved word
-        if (savedWord[SavedWords.userId] != userId) {
+        val ownWord = savedWord[SavedWords.userId] == userId
+        val borrowed = !ownWord && savedWord[SavedWords.categoryId] in reachableFolderIds
+        if (!ownWord && !borrowed) {
             return@dbQuery null
         }
 
-        // Check if flashcard already exists for this word
+        // One word, one card — matched on the word rather than on the saved row, because a card
+        // made from a group folder has no saved row of its own to match against.
         val existing = Flashcards.select {
-            (Flashcards.userId eq userId) and (Flashcards.savedWordId eq savedWordId)
+            (Flashcards.userId eq userId) and
+                (Flashcards.word.lowerCase() eq savedWord[SavedWords.word].trim().lowercase())
         }.firstOrNull()
 
         if (existing != null) {
@@ -210,7 +227,7 @@ class FlashcardRepository {
         val now = Instant.now()
         val id = Flashcards.insertAndGetId {
             it[Flashcards.userId] = userId
-            it[Flashcards.savedWordId] = savedWordId
+            it[Flashcards.savedWordId] = if (ownWord) savedWordId else null
             // A card starts in the folder its word lives in: creating cards from a folder and
             // then finding them unfiled would make the folder filter useless the moment it matters.
             it[categoryId] = savedWord[SavedWords.categoryId]
@@ -251,10 +268,17 @@ class FlashcardRepository {
      *
      * @return counts of created, adopted and skipped words.
      */
-    suspend fun createMissingFromCategory(userId: Int, categoryId: Int?): BulkOutcome = dbQuery {
+    suspend fun createMissingFromCategory(
+        userId: Int,
+        categoryId: Int?,
+        contentOwnerId: Int = userId
+    ): BulkOutcome = dbQuery {
+        // Under a group the folder stays the teacher's, so the words are read from their rows
+        // while the cards are made for whoever asked.
         val words = SavedWords.select {
-            (SavedWords.userId eq userId) and savedWordCategoryClause(categoryId)
+            (SavedWords.userId eq contentOwnerId) and savedWordCategoryClause(categoryId)
         }.toList()
+        val borrowed = contentOwnerId != userId
 
         // Карточка на слово может быть только одна, поэтому по ключу держим её папку и id.
         val existing = HashMap<String, Pair<Int, Int?>>()
@@ -289,7 +313,7 @@ class FlashcardRepository {
             }
             val newId = Flashcards.insertAndGetId {
                 it[Flashcards.userId] = userId
-                it[savedWordId] = row[SavedWords.id]
+                it[savedWordId] = if (borrowed) null else row[SavedWords.id]
                 it[Flashcards.categoryId] = target
                 it[Flashcards.word] = word
                 it[translation] = row[SavedWords.translation] ?: ""

@@ -1,9 +1,12 @@
 package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
+import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.SavedWords
+import n.startapp.database.tables.StudyGroupFolders
 import n.startapp.models.auth.CategoryDTO
 import n.startapp.utils.ShortToken
 import org.jetbrains.exposed.sql.*
@@ -55,17 +58,34 @@ class CategoryRepository {
     /**
      * Empties the folder of everything that points at it, then removes it.
      *
-     * Cards are unfiled as well as words: `flashcards.category_id` is a foreign key too, so
-     * deleting a folder any card still names fails outright. The card itself is kept — a folder
-     * is where a card lives, not why it exists.
+     * Every one of these is a foreign key to `categories.id`, and leaving any of them behind
+     * fails the delete outright rather than failing quietly. Nothing here is scoped to [userId]
+     * except the delete itself: once the folder is gone it is gone for everyone who could see it,
+     * so a class that was given it loses it too.
+     *
+     * Cards survive, unfiled. A folder is where a card lives, not why it exists — and for a
+     * student the deck they built from a class folder is their own work.
      */
     suspend fun delete(userId: Int, categoryId: Int): Boolean = dbQuery {
-        SavedWords.update({ (SavedWords.userId eq userId) and (SavedWords.categoryId eq categoryId) }) {
+        val owned = Categories.selectAll()
+            .where { (Categories.id eq categoryId) and (Categories.userId eq userId) }
+            .count() > 0
+        if (!owned) return@dbQuery false
+
+        SavedWords.update({ SavedWords.categoryId eq categoryId }) {
             it[SavedWords.categoryId] = null
         }
-        Flashcards.update({ (Flashcards.userId eq userId) and (Flashcards.categoryId eq categoryId) }) {
+        Flashcards.update({ Flashcards.categoryId eq categoryId }) {
             it[Flashcards.categoryId] = null
         }
+        Assignments.update({ Assignments.categoryId eq categoryId }) {
+            it[Assignments.categoryId] = null
+        }
+        PracticeAttempts.update({ PracticeAttempts.categoryId eq categoryId }) {
+            it[PracticeAttempts.categoryId] = null
+        }
+        StudyGroupFolders.deleteWhere { StudyGroupFolders.categoryId eq categoryId }
+
         Categories.deleteWhere { (Categories.id eq categoryId) and (Categories.userId eq userId) } > 0
     }
 
