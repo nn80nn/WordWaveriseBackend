@@ -3,6 +3,7 @@ package n.startapp.services.group
 import n.startapp.exceptions.ForbiddenException
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.exercise.ExerciseRequest
+import n.startapp.models.auth.UNCATEGORIZED_CATEGORY_ID
 import n.startapp.repositories.AssignmentRepository
 import n.startapp.repositories.GroupRepository
 
@@ -23,11 +24,12 @@ data class PreparedSession(
  */
 class AssignmentSession(
     private val assignments: AssignmentRepository = AssignmentRepository(),
-    private val groups: GroupRepository = GroupRepository()
+    private val groups: GroupRepository = GroupRepository(),
+    private val folders: FolderAccessResolver = FolderAccessResolver()
 ) {
 
     suspend fun prepare(userId: Int, request: ExerciseRequest): PreparedSession {
-        val assignmentId = request.assignmentId ?: return PreparedSession(request)
+        val assignmentId = request.assignmentId ?: return withoutAssignment(userId, request)
 
         val assignment = assignments.findById(assignmentId)
             ?: throw NotFoundException("Задание не найдено")
@@ -47,5 +49,20 @@ class AssignmentSession(
             groupId = group.id,
             assignmentId = assignment.id
         )
+    }
+
+    /**
+     * Практика по папке класса без задания — тоже работа по материалу класса.
+     *
+     * Без этого в статистику попадало бы только то, что задали, а «я сам позанимался по вашей
+     * папке» не существовало бы вовсе — учитель видел бы ноль у того, кто занимался больше всех.
+     */
+    private suspend fun withoutAssignment(userId: Int, request: ExerciseRequest): PreparedSession {
+        val categoryId = request.categoryId
+        if (categoryId == null || categoryId == UNCATEGORIZED_CATEGORY_ID) {
+            return PreparedSession(request)
+        }
+        val folder = folders.resolve(userId, categoryId) ?: return PreparedSession(request)
+        return PreparedSession(request, groupId = folder.groupId)
     }
 }
