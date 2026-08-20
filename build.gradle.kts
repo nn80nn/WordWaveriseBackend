@@ -81,6 +81,11 @@ dependencies {
 
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
+
+    // In-memory database for the schema smoke test. Creating the tables is the one step of
+    // startup with no rollback: a table Exposed cannot emit takes the server down on boot,
+    // and the deploy that did it is already live. See SchemaCreationTest.
+    testImplementation("com.h2database:h2:2.2.224")
 }
 
 tasks.withType<Test> {

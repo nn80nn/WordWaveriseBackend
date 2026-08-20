@@ -23,12 +23,27 @@ import n.startapp.utils.EnvConfig
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.transactions.transaction
 
 /**
  * Database factory for managing database connections and initialization
  */
 object DatabaseFactory {
+
+    /**
+     * Every table the application owns, parents before children.
+     *
+     * A list rather than an inline vararg so the schema test can create exactly what startup
+     * creates. Creating tables is the one step of boot with no rollback — a definition Exposed
+     * cannot emit takes the server down, and by then the deploy that did it is already live.
+     */
+    val ALL_TABLES: Array<Table> = arrayOf(
+        Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests,
+        LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
+        StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts
+    )
+
     fun init() {
         println("🔌 Initializing database connection...")
         println("   URL: ${EnvConfig.dbUrl}")
@@ -59,16 +74,10 @@ object DatabaseFactory {
             Database.connect(dataSource)
             println("✅ Database connection pool created successfully")
 
-            // Create tables if they don't exist
+            // Create tables if they do not exist
             transaction {
-                println("📋 Creating database tables if they don't exist...")
-                SchemaUtils.createMissingTablesAndColumns(
-                    Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests,
-                    LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
-                    // Parents before children: every one of these references a table above it.
-                    StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments,
-                    PracticeAttempts
-                )
+                println("📋 Creating database tables if they do not exist...")
+                SchemaUtils.createMissingTablesAndColumns(*ALL_TABLES)
                 println("✅ Database tables ready")
             }
         } catch (e: Exception) {
