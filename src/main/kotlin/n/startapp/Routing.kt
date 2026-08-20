@@ -19,6 +19,7 @@ import n.startapp.routes.adminCorpusRoutes
 import n.startapp.routes.adminRoutes
 import n.startapp.routes.adminSettingsRoutes
 import n.startapp.routes.aiRoutes
+import n.startapp.routes.assignmentRoutes
 import n.startapp.routes.authRoutes
 import n.startapp.routes.categoryRoutes
 import n.startapp.routes.exerciseRoutes
@@ -157,6 +158,7 @@ fun Application.configureRouting(services: ServiceRegistry) {
         // Groups: a teacher, their students, the folders and assignments they hand out.
         groupRoutes()
         groupInviteRoutes()
+        assignmentRoutes()
 
         // Practice sessions built from a folder (protected)
         exerciseRoutes(services.exerciseService)

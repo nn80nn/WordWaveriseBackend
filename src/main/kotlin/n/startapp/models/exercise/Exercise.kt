@@ -138,7 +138,16 @@ data class ExerciseRequest(
     val kinds: List<ExerciseKind> = emptyList(),
     val count: Int = 10,
     /** false keeps the batch entirely local: instant, free, and offline-friendly. */
-    val useAi: Boolean = true
+    val useAi: Boolean = true,
+
+    /**
+     * Practising towards work a teacher set.
+     *
+     * When present the server takes the folder and the kinds from the assignment and ignores
+     * whatever was sent alongside — that is what makes the same assignment produce the same
+     * session in the browser and on the phone, rather than each client assembling its own.
+     */
+    val assignmentId: Int? = null
 ) {
     companion object {
         /** Folder filter meaning "words that are in no folder". Same value in both clients. */
@@ -153,7 +162,16 @@ data class ExerciseBatch(
     val wordsAvailable: Int,
     val kindsUsed: List<ExerciseKind>,
     /** Russian explanation when the batch is smaller or narrower than asked for. */
-    val noticeRu: String? = null
+    val noticeRu: String? = null,
+
+    /**
+     * Where to report the answers, when this session is towards a teacher's assignment.
+     *
+     * Echoed back rather than left for the client to work out: whether an answer counts towards a
+     * class is a question about membership, and the client should not have to reason about it.
+     */
+    val groupId: Int? = null,
+    val assignmentId: Int? = null
 )
 
 /** What a kind needs before it can be offered, so the client can explain an empty batch. */

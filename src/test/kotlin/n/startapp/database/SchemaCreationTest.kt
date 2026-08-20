@@ -9,7 +9,6 @@ import n.startapp.database.tables.StudyGroupMembers
 import n.startapp.database.tables.StudyGroups
 import n.startapp.database.tables.Users
 import org.jetbrains.exposed.exceptions.ExposedSQLException
-import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
@@ -17,7 +16,6 @@ import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -37,18 +35,9 @@ import kotlin.test.assertFailsWith
  */
 class SchemaCreationTest {
 
-    private val ids = AtomicInteger(1)
-    private fun nextId() = ids.getAndIncrement()
-
-    private fun <T> onFreshDatabase(block: () -> T): T {
-        // A private database per test: creation is the thing under test, so it cannot be shared.
-        val name = "schema_${nextId()}_${System.nanoTime()}"
-        Database.connect("jdbc:h2:mem:$name;MODE=PostgreSQL;DB_CLOSE_DELAY=-1", driver = "org.h2.Driver")
-        return transaction {
-            SchemaUtils.createMissingTablesAndColumns(*DatabaseFactory.ALL_TABLES)
-            block()
-        }
-    }
+    // A private database per test: creation is the thing under test, so it cannot be shared.
+    private fun <T> onFreshDatabase(block: () -> T): T =
+        TestDatabase.fresh("schema") { transaction { block() } }
 
     @Test
     fun `every table the application owns can actually be created`() {

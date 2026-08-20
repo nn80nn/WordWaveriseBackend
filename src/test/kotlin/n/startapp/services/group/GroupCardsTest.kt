@@ -1,21 +1,18 @@
 package n.startapp.services.group
 
 import kotlinx.coroutines.runBlocking
-import n.startapp.database.DatabaseFactory
+import n.startapp.database.TestDatabase
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.Users
 import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.SavedWordRepository
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -33,14 +30,7 @@ import kotlin.test.assertTrue
  */
 class GroupCardsTest {
 
-    private val ids = AtomicInteger(1)
-
-    private fun <T> onFreshDatabase(block: () -> T): T {
-        val name = "cards_${ids.getAndIncrement()}_${System.nanoTime()}"
-        Database.connect("jdbc:h2:mem:$name;MODE=PostgreSQL;DB_CLOSE_DELAY=-1", driver = "org.h2.Driver")
-        transaction { SchemaUtils.createMissingTablesAndColumns(*DatabaseFactory.ALL_TABLES) }
-        return block()
-    }
+    private fun <T> onFreshDatabase(block: () -> T): T = TestDatabase.fresh("cards", block)
 
     private fun user(name: String): Int = transaction {
         Users.insert {

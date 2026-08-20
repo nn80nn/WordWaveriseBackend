@@ -1,7 +1,7 @@
 package n.startapp.services.group
 
 import kotlinx.coroutines.runBlocking
-import n.startapp.database.DatabaseFactory
+import n.startapp.database.TestDatabase
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
@@ -11,15 +11,12 @@ import n.startapp.database.tables.Users
 import n.startapp.repositories.CategoryRepository
 import n.startapp.repositories.GroupRepository
 import n.startapp.services.AccountDeletionService
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -36,14 +33,7 @@ import kotlin.test.assertTrue
  */
 class GroupLifecycleTest {
 
-    private val ids = AtomicInteger(1)
-
-    private fun <T> onFreshDatabase(block: () -> T): T {
-        val name = "lifecycle_${ids.getAndIncrement()}_${System.nanoTime()}"
-        Database.connect("jdbc:h2:mem:$name;MODE=PostgreSQL;DB_CLOSE_DELAY=-1", driver = "org.h2.Driver")
-        transaction { SchemaUtils.createMissingTablesAndColumns(*DatabaseFactory.ALL_TABLES) }
-        return block()
-    }
+    private fun <T> onFreshDatabase(block: () -> T): T = TestDatabase.fresh("lifecycle", block)
 
     /** Teacher, student, a folder with one word in it, handed to a group the student is in. */
     private class Classroom(val teacher: Int, val student: Int, val folder: Int, val group: Int)

@@ -10,6 +10,7 @@ import n.startapp.models.ApiResponse
 import n.startapp.models.exercise.ExerciseRequest
 import n.startapp.models.exercise.ExerciseScope
 import n.startapp.services.exercise.ExerciseService
+import n.startapp.services.group.AssignmentSession
 
 /**
  * Practice sessions.
@@ -18,6 +19,8 @@ import n.startapp.services.exercise.ExerciseService
  * `-1` means the words in no folder.
  */
 fun Route.exerciseRoutes(exerciseService: ExerciseService) {
+    val assignmentSession = AssignmentSession()
+
     authenticate("auth-jwt") {
         route("/api/exercises") {
 
@@ -33,8 +36,17 @@ fun Route.exerciseRoutes(exerciseService: ExerciseService) {
                 val request = runCatching { call.receive<ExerciseRequest>() }
                     .getOrElse { throw BadRequestException("Invalid exercise request") }
 
-                val batch = exerciseService.generate(call.userId(), request)
-                call.respond(ApiResponse.success(batch))
+                // An assignment decides the folder and the kinds, so both clients get the same
+                // session out of it rather than each assembling one from its own defaults.
+                val userId = call.userId()
+                val prepared = assignmentSession.prepare(userId, request)
+
+                val batch = exerciseService.generate(userId, prepared.request)
+                call.respond(
+                    ApiResponse.success(
+                        batch.copy(groupId = prepared.groupId, assignmentId = prepared.assignmentId)
+                    )
+                )
             }
         }
     }
