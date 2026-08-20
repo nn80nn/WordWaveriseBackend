@@ -7,7 +7,6 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
 import n.startapp.database.DatabaseFactory.dbQuery
-import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.TestingRequests
@@ -17,6 +16,7 @@ import n.startapp.exceptions.NotFoundException
 import n.startapp.models.ApiResponse
 import n.startapp.models.auth.toDTO
 import n.startapp.repositories.UserRepository
+import n.startapp.services.AccountDeletionService
 import n.startapp.services.EmailService
 import n.startapp.utils.EnvConfig
 import n.startapp.utils.PasswordUtil
@@ -85,6 +85,7 @@ private const val ANDROID_TESTING_URL = "https://play.google.com/apps/testing/co
 fun Application.adminRoutes() {
     val userRepository = UserRepository()
     val emailService = EmailService()
+    val accountDeletion = AccountDeletionService()
 
     routing {
         route("/api/admin") {
@@ -178,12 +179,9 @@ fun Application.adminRoutes() {
                 val userId = call.parameters["id"]?.toIntOrNull()
                     ?: throw BadRequestException("Invalid user id")
 
-                dbQuery {
-                    Flashcards.deleteWhere { Flashcards.userId eq userId }
-                    SavedWords.deleteWhere { SavedWords.userId eq userId }
-                    Categories.deleteWhere { Categories.userId eq userId }
-                    Users.deleteWhere { Users.id eq userId }
-                }
+                // Same purge as a self-requested deletion: one copy, so the two cannot drift
+                // apart from the schema again.
+                accountDeletion.purgeUser(userId)
                 call.respond(ApiResponse.success("User deleted"))
             }
 

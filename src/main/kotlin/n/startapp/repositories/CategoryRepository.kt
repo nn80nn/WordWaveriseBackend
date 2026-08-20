@@ -2,6 +2,7 @@ package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Categories
+import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.CategoryDTO
 import org.jetbrains.exposed.sql.*
@@ -50,10 +51,19 @@ class CategoryRepository {
         } > 0
     }
 
+    /**
+     * Empties the folder of everything that points at it, then removes it.
+     *
+     * Cards are unfiled as well as words: `flashcards.category_id` is a foreign key too, so
+     * deleting a folder any card still names fails outright. The card itself is kept — a folder
+     * is where a card lives, not why it exists.
+     */
     suspend fun delete(userId: Int, categoryId: Int): Boolean = dbQuery {
-        // Unassign words from this category first
         SavedWords.update({ (SavedWords.userId eq userId) and (SavedWords.categoryId eq categoryId) }) {
             it[SavedWords.categoryId] = null
+        }
+        Flashcards.update({ (Flashcards.userId eq userId) and (Flashcards.categoryId eq categoryId) }) {
+            it[Flashcards.categoryId] = null
         }
         Categories.deleteWhere { (Categories.id eq categoryId) and (Categories.userId eq userId) } > 0
     }
