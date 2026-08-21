@@ -64,7 +64,6 @@ object ExerciseGenerator {
         ExerciseKind.TRANSLATE_EN_RU,
         ExerciseKind.FILL_BLANK,
         ExerciseKind.COLLOCATION,
-        ExerciseKind.WORD_FORM,
         ExerciseKind.SPELLING,
         ExerciseKind.LISTENING
     )
@@ -90,7 +89,6 @@ object ExerciseGenerator {
         ExerciseKind.TRANSLATE_EN_RU -> translateEnRu(target)
         ExerciseKind.FILL_BLANK -> fillBlank(target)
         ExerciseKind.COLLOCATION -> collocation(target, pool, random)
-        ExerciseKind.WORD_FORM -> wordForm(target, random)
         ExerciseKind.SPELLING -> spelling(target)
         ExerciseKind.LISTENING -> listening(target)
         ExerciseKind.CONTEXT_CHOICE -> null // model-written; see ExerciseService
@@ -316,42 +314,6 @@ object ExerciseGenerator {
             cardId = target.cardId,
             savedWordId = target.savedWordId,
             source = if (bilingual != null) ExerciseSource.CORPUS else ExerciseSource.CARD
-        )
-    }
-
-    /** Inflection, drilled from the forms the annotation layer already derived and verified. */
-    private fun wordForm(target: PracticeWord, random: Random): Exercise? {
-        // Слово без пина берёт первую группу, у которой вообще есть формы; с пином —
-        // только свою: у существительного множественное число, у глагола прошедшее время.
-        val group = if (target.senseId.isNullOrBlank())
-            target.entry?.posGroups?.firstOrNull { it.forms?.all()?.isNotEmpty() == true }
-        else groupOf(target)
-        val forms = group?.forms?.takeIf { it.all().isNotEmpty() } ?: return null
-
-        val options = listOfNotNull(
-            forms.plural?.let { "множественное число" to it },
-            forms.past?.let { "прошедшее время" to it },
-            forms.pastParticiple?.let { "причастие прошедшего времени" to it },
-            forms.presentParticiple?.let { "форма -ing" to it },
-            forms.thirdPerson?.let { "3-е лицо единственного числа" to it },
-            forms.comparative?.let { "сравнительная степень" to it },
-            forms.superlative?.let { "превосходная степень" to it }
-        ).filter { !it.second.equals(target.word, ignoreCase = true) }
-
-        val (label, form) = options.randomOrNull(random) ?: return null
-        return Exercise(
-            id = id(target, ExerciseKind.WORD_FORM),
-            kind = ExerciseKind.WORD_FORM,
-            format = ExerciseFormat.INPUT,
-            word = target.word,
-            promptRu = "Поставьте слово в форму: $label",
-            question = target.word,
-            answer = form,
-            hintRu = letterHint(form),
-            explanationRu = "${target.word} → $form ($label)",
-            cardId = target.cardId,
-            savedWordId = target.savedWordId,
-            source = ExerciseSource.CORPUS
         )
     }
 

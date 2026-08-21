@@ -231,21 +231,6 @@ class ExerciseGeneratorTest {
     }
 
     @Test
-    fun `word forms are drilled from the forms the article already carries`() {
-        val target = word(
-            "run",
-            entry = entry("run", forms = InflectedForms(past = "ran", presentParticiple = "running"))
-        )
-        val exercise = assertNotNull(
-            ExerciseGenerator.build(target, listOf(target), ExerciseKind.WORD_FORM, random)
-        )
-        assertEquals("run", exercise.question)
-        assertTrue(exercise.answer in listOf("ran", "running"))
-        // Asking for the form the headword already is would be a free point.
-        assertTrue(!exercise.answer.equals("run", ignoreCase = true))
-    }
-
-    @Test
     fun `a word with no article still produces the questions a card can support`() {
         val pool = pool()
         val plain = word("resolve", translation = "решать", definition = "to settle a dispute firmly")
@@ -254,7 +239,6 @@ class ExerciseGeneratorTest {
         assertNotNull(ExerciseGenerator.build(plain, pool, ExerciseKind.SPELLING, random))
         // ...but the corpus-only kinds honestly decline.
         assertNull(ExerciseGenerator.build(plain, pool, ExerciseKind.COLLOCATION, random))
-        assertNull(ExerciseGenerator.build(plain, pool, ExerciseKind.WORD_FORM, random))
     }
 
     @Test
@@ -449,20 +433,6 @@ class ExerciseGeneratorTest {
     }
 
     @Test
-    fun `a pinned verb is drilled on verb forms, never on the noun's plural`() {
-        val target = word("resolve", entry = twoSenseEntry(), senseId = "v1")
-
-        val exercise = assertNotNull(
-            ExerciseGenerator.build(target, listOf(target), ExerciseKind.WORD_FORM, random)
-        )
-
-        assertTrue(
-            exercise.answer in setOf("resolved", "resolving"),
-            "a verb sense must not be asked for the noun plural: got ${exercise.answer}"
-        )
-    }
-
-    @Test
     fun `a pinned sense borrows neither examples nor collocations from the other one`() {
         val target = word("resolve", entry = twoSenseEntry(), senseId = "n1")
         val pool = listOf(target) + pool().filter { it.word != "resolve" }
@@ -499,7 +469,6 @@ class ExerciseGeneratorTest {
 
         assertNull(ExerciseGenerator.build(target, pool, ExerciseKind.FILL_BLANK, random))
         assertNull(ExerciseGenerator.build(target, pool, ExerciseKind.COLLOCATION, random))
-        assertNull(ExerciseGenerator.build(target, pool, ExerciseKind.WORD_FORM, random))
 
         val typed = assertNotNull(
             ExerciseGenerator.build(target, pool, ExerciseKind.TRANSLATE_EN_RU, random)

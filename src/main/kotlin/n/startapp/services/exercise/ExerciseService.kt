@@ -118,8 +118,6 @@ class ExerciseService(
                 ("Оттенок значения" to "Четыре близких синонима — подходит только один."),
             ExerciseKind.COLLOCATION to
                 ("Сочетаемость" to "Устойчивое сочетание: какое слово в нём стоит."),
-            ExerciseKind.WORD_FORM to
-                ("Формы слова" to "Множественное число, прошедшее время, степени сравнения."),
             ExerciseKind.SPELLING to
                 ("Написание" to "Определение по-английски — напишите слово по буквам.")
         )
@@ -215,7 +213,14 @@ class ExerciseService(
         val raw: List<PracticeWord> = when (scope) {
             // Not `savedWords.findByUserId`: a folder handed out by a group holds the teacher's
             // rows, and reading only the learner's own would make that folder practise as empty.
+            //
+            // ⚠️ Without a folder filter the class's words stay out. «Все» has to mean the same
+            // thing here as it does in the word list: your own vocabulary. A teacher can hand
+            // out hundreds of words, and letting them into the unfiltered session would bury
+            // the learner's own — they would practise somebody else's list by default and have
+            // no way to ask for theirs. A named folder is an explicit request, so it is honoured.
             ExerciseScope.SAVED -> folders.wordsFor(userId)
+                .filter { categoryId != null || !it.readOnly }
                 .map { it.word }
                 .filter { matchesCategory(it.categoryId, categoryId) }
                 .map { saved ->

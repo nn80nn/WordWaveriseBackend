@@ -45,9 +45,6 @@ enum class ExerciseKind {
     /** Which word goes with this one — `make/do a decision`. */
     COLLOCATION,
 
-    /** Put the word into the grammatical form the sentence asks for. */
-    WORD_FORM,
-
     /** Definition (and audio, if any) → spell the word. */
     SPELLING,
 
