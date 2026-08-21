@@ -50,12 +50,15 @@ class FolderCatalog(
     /**
      * The reader's own words, then the ones their groups lend them.
      *
-     * ⚠️ A headword is never returned twice. Android stores saved words keyed by the headword
-     * itself, so a second row for the same spelling does not appear beside the first — it
-     * overwrites it, and whichever arrived last wins the folder. When the reader already has a
-     * word of their own, theirs is the one that survives: it carries their pinned sense and
-     * their folder, and losing that to a borrowed copy would be a real loss rather than a
-     * cosmetic one.
+     * ⚠️ A borrowed word is dropped when the reader has already saved that *sense* of it. Their
+     * row carries their folders and — once they have a card — their review history, and a
+     * second copy of the same meaning would only give them the same word to learn twice. A
+     * different sense of the same spelling is not the same word, so it stays: the class folder
+     * shows what the teacher put in it.
+     *
+     * A borrowed word is also trimmed to the folders this reader can actually reach. Its row
+     * may be filed under several of the teacher's folders, and naming the ones the reader was
+     * never given would leak what else the teacher keeps that word in.
      */
     suspend fun wordsFor(userId: Int): List<VisibleWord> {
         val own = savedWords.findByUserId(userId)
@@ -64,7 +67,7 @@ class FolderCatalog(
         val borrowedFolders = resolver.groupFolders(userId)
         if (borrowedFolders.isEmpty()) return own
 
-        val taken = own.mapTo(mutableSetOf()) { it.word.word.trim().lowercase() }
+        val taken = own.mapTo(mutableSetOf()) { it.word.word.trim().lowercase() to it.word.senseId }
 
         // Grouped by owner so each teacher's words are read in one query.
         val byOwner = resolver.visible(userId)
@@ -75,11 +78,12 @@ class FolderCatalog(
         for ((ownerId, folders) in byOwner) {
             val ids = folders.map { it.categoryId }
             for (word in savedWords.findByCategoryIds(ownerId, ids)) {
-                val key = word.word.trim().lowercase()
+                val key = word.word.trim().lowercase() to word.senseId
                 if (!taken.add(key)) continue
+                val reachable = word.categoryIds.filter { it in borrowedFolders }
                 borrowed += VisibleWord(
-                    word = word,
-                    groupId = borrowedFolders[word.categoryId]?.id,
+                    word = word.copy(categoryIds = reachable),
+                    groupId = reachable.firstNotNullOfOrNull { borrowedFolders[it] }?.id,
                     readOnly = true
                 )
             }

@@ -5,6 +5,7 @@ import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.PracticeAttempts
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.StudyGroupFolders
 import n.startapp.models.auth.CategoryDTO
@@ -25,11 +26,12 @@ class CategoryRepository {
     )
 
     suspend fun findByUserId(userId: Int): List<CategoryDTO> = dbQuery {
-        val counts = SavedWords
-            .select(SavedWords.categoryId, SavedWords.id.count())
+        val filed = SavedWordCategories.savedWordId.count()
+        val counts = (SavedWordCategories innerJoin SavedWords)
+            .select(SavedWordCategories.categoryId, filed)
             .where { SavedWords.userId eq userId }
-            .groupBy(SavedWords.categoryId)
-            .associate { it[SavedWords.categoryId] to it[SavedWords.id.count()].toInt() }
+            .groupBy(SavedWordCategories.categoryId)
+            .associate { it[SavedWordCategories.categoryId] to it[filed].toInt() }
 
         Categories.selectAll()
             .where { Categories.userId eq userId }
@@ -72,9 +74,9 @@ class CategoryRepository {
             .count() > 0
         if (!owned) return@dbQuery false
 
-        SavedWords.update({ SavedWords.categoryId eq categoryId }) {
-            it[SavedWords.categoryId] = null
-        }
+        // Пятая внешняя ссылка на categories.id. Пропущенная означает не «фича не
+        // работает», а 500 без объяснений при удалении папки.
+        SavedWordCategories.deleteWhere { SavedWordCategories.categoryId eq categoryId }
         Flashcards.update({ Flashcards.categoryId eq categoryId }) {
             it[Flashcards.categoryId] = null
         }

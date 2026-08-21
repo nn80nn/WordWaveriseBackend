@@ -14,6 +14,7 @@ import n.startapp.models.ApiResponse
 import n.startapp.models.auth.SaveWordRequest
 import n.startapp.models.auth.SavedWord
 import n.startapp.models.auth.SavedWordsResponse
+import n.startapp.models.auth.SetWordFoldersRequest
 import n.startapp.models.auth.toDTO
 import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.LexicalEntryRepository
@@ -63,6 +64,57 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
                             )
                         )
                     )
+                }
+
+                /**
+                 * Removes one entry — one sense — leaving the other senses of that word.
+                 *
+                 * Two segments, so it cannot collide with `/{word}` below. That route stays
+                 * because the app in the Play Store speaks it, and it means what it always
+                 * meant: «убрать это слово», all of it.
+                 */
+                delete("/id/{id}") {
+                    val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                    val id = call.parameters["id"]?.toIntOrNull()
+                        ?: throw BadRequestException("Invalid saved word id")
+
+                    if (!savedWordRepository.deleteEntry(userId, id)) {
+                        throw NotFoundException("Word not found in saved words")
+                    }
+                    call.respond(ApiResponse.success("Word deleted successfully"))
+                }
+
+                /** Replaces the folders of one entry. An empty list files it nowhere. */
+                put("/id/{id}/folders") {
+                    val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                    val id = call.parameters["id"]?.toIntOrNull()
+                        ?: throw BadRequestException("Invalid saved word id")
+                    val request = call.receive<SetWordFoldersRequest>()
+
+                    // ⚠️ Только свои папки. Класть слово в папку группы значило бы писать в
+                    // словарь учителя, а это совсем другое действие, чем учить то, что в нём.
+                    val folders = FolderAccessResolver()
+                    for (categoryId in request.categoryIds.distinct()) {
+                        folders.requireOwned(userId, categoryId)
+                    }
+
+                    val updated = savedWordRepository.setFolders(userId, id, request.categoryIds)
+                        ?: throw NotFoundException("Saved word not found")
+
+                    // Карточка едет за словом, если лежала вне папок, — то же правило, что и у
+                    // одиночного переноса. Папок теперь может быть несколько, а карточка одна,
+                    // поэтому берётся первая: разложить одно значение по двум расписаниям
+                    // нельзя, а выбрать за человека одно из них — можно.
+                    runCatching {
+                        flashcardRepository.followWordIntoFolder(
+                            userId = userId,
+                            word = updated.word,
+                            categoryId = updated.categoryIds.firstOrNull(),
+                            senseId = updated.senseId
+                        )
+                    }.onFailure { savedWordLogger.warn("Card did not follow '${updated.word}': ${it.message}") }
+
+                    call.respond(ApiResponse.success(updated.toDTO()))
                 }
 
                 // Delete a saved word
@@ -138,11 +190,14 @@ private suspend fun SavedWordRepository.saveFrom(
         translation = wording?.translation?.takeIf { it.isNotBlank() } ?: request.translation,
         definition = wording?.definition ?: request.definition,
         example = wording?.example,
-        senseId = pinned
+        senseId = pinned,
+        categoryIds = request.categoryIds.orEmpty()
     ) ?: throw Exception("Failed to save word")
 
-    // Карточка этого слова могла быть создана раньше — и по другому значению. Оставить её как
-    // есть значило бы, что список слов и повторение спорят друг с другом.
+    // Карточка этого слова могла быть создана раньше — до того, как человек вообще выбрал
+    // значение. Оставить её как есть значило бы, что список слов и повторение спорят друг с
+    // другом. ⚠️ Карточку, уже привязанную к *другому* значению, repinToSense не трогает: это
+    // карточка другой записи, и переписать её здесь значило бы стереть чужое расписание.
     if (pinned != null && wording != null) {
         runCatching {
             flashcards.repinToSense(

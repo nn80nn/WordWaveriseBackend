@@ -5,6 +5,7 @@ import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.PracticeAttempts
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.StudyGroupFolders
 import n.startapp.database.tables.StudyGroupMembers
@@ -314,14 +315,27 @@ class GroupRepository {
     suspend fun wordCount(groupId: Int): Int = dbQuery {
         val folders = folderIdsInTx(groupId)
         if (folders.isEmpty()) return@dbQuery 0
-        SavedWords.selectAll().where { SavedWords.categoryId inList folders }.count().toInt()
+        // distinct(): одно слово может лежать в двух папках одной группы, и тогда «сколько
+        // слов в классе» посчитало бы его дважды.
+        (SavedWordCategories innerJoin SavedWords)
+            .select(SavedWordCategories.savedWordId)
+            .where { SavedWordCategories.categoryId inList folders }
+            .withDistinct()
+            .count()
+            .toInt()
     }
 
     suspend fun sampleWords(groupId: Int, limit: Int): List<Pair<String, String?>> = dbQuery {
         val folders = folderIdsInTx(groupId)
         if (folders.isEmpty()) return@dbQuery emptyList()
+        val ids = SavedWordCategories
+            .select(SavedWordCategories.savedWordId)
+            .where { SavedWordCategories.categoryId inList folders }
+            .map { it[SavedWordCategories.savedWordId] }
+            .distinct()
+        if (ids.isEmpty()) return@dbQuery emptyList()
         SavedWords.selectAll()
-            .where { SavedWords.categoryId inList folders }
+            .where { SavedWords.id inList ids }
             .orderBy(SavedWords.savedAt to SortOrder.ASC)
             .limit(limit)
             .map { it[SavedWords.word] to it[SavedWords.translation] }

@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import n.startapp.database.TestDatabase
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.Users
 import n.startapp.repositories.FlashcardRepository
@@ -47,13 +48,19 @@ class GroupCardsTest {
     }
 
     private fun word(owner: Int, text: String, folderId: Int?, sense: String? = null): Int = transaction {
-        SavedWords.insert {
+        val id = SavedWords.insert {
             it[userId] = owner
             it[word] = text
             it[translation] = "перевод"
-            it[categoryId] = folderId
             it[senseId] = sense
         }[SavedWords.id]
+        if (folderId != null) {
+            SavedWordCategories.insert {
+                it[savedWordId] = id
+                it[categoryId] = folderId
+            }
+        }
+        id
     }
 
     private fun cardsOf(userId: Int) = transaction {

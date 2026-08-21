@@ -3,6 +3,7 @@ package n.startapp.repositories
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.services.flashcard.BulkFill
 import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.UNCATEGORIZED_CATEGORY_ID
 import n.startapp.models.flashcard.Flashcard
@@ -30,12 +31,18 @@ class FlashcardRepository {
         phonetic: String? = null,
         audioUrl: String? = null
     ): Flashcard = dbQuery {
-        // ⚠️ Одно слово — одна карточка. Прямое создание вставляло безусловно, и второй
+        // ⚠️ Одно значение — одна карточка. Прямое создание вставляло безусловно, и второй
         // «в флешкарты» с другого устройства (или после переустановки приложения, где
         // локальная проверка на дубль ничего не знает) заводил вторую карточку на то же
         // слово: в повторении оно приходило дважды, а расписание расходилось между копиями.
+        //
+        // ⚠️ Ключ — слово *и* значение. По одному написанию «resolve/решать» отменял бы
+        // создание карточки для «resolve/разлагать»: человек отметил два значения как два
+        // слова, а колода молча оставалась бы с одним.
         Flashcards.select {
-            (Flashcards.userId eq userId) and (Flashcards.word.lowerCase() eq word.trim().lowercase())
+            (Flashcards.userId eq userId) and
+                (Flashcards.word.lowerCase() eq word.trim().lowercase()) and
+                senseMatches(senseId)
         }.firstOrNull()?.let { return@dbQuery rowToFlashcard(it) }
 
         val now = Instant.now()
@@ -122,6 +129,11 @@ class FlashcardRepository {
      *
      * The schedule is untouched: this changes what a card says, not what it has learned about
      * the learner.
+     *
+     * ⚠️ Only a card that is not pinned yet, or is already pinned to [senseId], is touched. A
+     * card drilling another sense of the same spelling belongs to another saved entry — saving
+     * «resolve/разлагать» must not quietly rewrite the card the person has been reviewing for
+     * «resolve/решать».
      */
     suspend fun repinToSense(
         userId: Int,
@@ -136,6 +148,7 @@ class FlashcardRepository {
         Flashcards.update({
             (Flashcards.userId eq userId) and
                 (Flashcards.word.lowerCase() eq word.trim().lowercase()) and
+                (Flashcards.senseId.isNull() or (Flashcards.senseId eq senseId)) and
                 (Flashcards.customized eq false)
         }) {
             it[Flashcards.senseId] = senseId
@@ -162,10 +175,21 @@ class FlashcardRepository {
      *
      * @return true when a card actually moved.
      */
-    suspend fun followWordIntoFolder(userId: Int, word: String, categoryId: Int?): Boolean = dbQuery {
+    suspend fun followWordIntoFolder(
+        userId: Int,
+        word: String,
+        categoryId: Int?,
+        /**
+         * Which card. null means «любая карточка этого слова» — what the folder move by
+         * headword has always meant, and what it still has to mean for a client that cannot
+         * name a sense.
+         */
+        senseId: String? = null
+    ): Boolean = dbQuery {
         val key = word.trim().lowercase()
         val row = Flashcards.select {
-            (Flashcards.userId eq userId) and (Flashcards.word.lowerCase() eq key)
+            val sameWord = (Flashcards.userId eq userId) and (Flashcards.word.lowerCase() eq key)
+            if (senseId == null) sameWord else sameWord and senseMatches(senseId)
         }.firstOrNull() ?: return@dbQuery false
 
         if (BulkFill.actionFor(row[Flashcards.categoryId], categoryId) != BulkFill.Action.ADOPT) {
@@ -206,17 +230,23 @@ class FlashcardRepository {
             .firstOrNull()
             ?: return@dbQuery null
 
+        val folders = SavedWordCategories
+            .select(SavedWordCategories.categoryId)
+            .where { SavedWordCategories.savedWordId eq savedWordId }
+            .map { it[SavedWordCategories.categoryId] }
+
         val ownWord = savedWord[SavedWords.userId] == userId
-        val borrowed = !ownWord && savedWord[SavedWords.categoryId] in reachableFolderIds
+        val borrowed = !ownWord && folders.any { it in reachableFolderIds }
         if (!ownWord && !borrowed) {
             return@dbQuery null
         }
 
-        // One word, one card — matched on the word rather than on the saved row, because a card
-        // made from a group folder has no saved row of its own to match against.
+        // One sense, one card — matched on the word and the sense rather than on the saved row,
+        // because a card made from a group folder has no saved row of its own to match against.
         val existing = Flashcards.select {
             (Flashcards.userId eq userId) and
-                (Flashcards.word.lowerCase() eq savedWord[SavedWords.word].trim().lowercase())
+                (Flashcards.word.lowerCase() eq savedWord[SavedWords.word].trim().lowercase()) and
+                senseMatches(savedWord[SavedWords.senseId])
         }.firstOrNull()
 
         if (existing != null) {
@@ -230,7 +260,14 @@ class FlashcardRepository {
             it[Flashcards.savedWordId] = if (ownWord) savedWordId else null
             // A card starts in the folder its word lives in: creating cards from a folder and
             // then finding them unfiled would make the folder filter useless the moment it matters.
-            it[categoryId] = savedWord[SavedWords.categoryId]
+            //
+            // ⚠️ A card has one folder while a word may have several, so the first is taken —
+            // for a borrowed word, the first the reader can actually reach. Spreading the card
+            // across folders would mean several cards for one meaning, and the whole point of a
+            // card is that a meaning is reviewed on one schedule.
+            it[categoryId] =
+                if (borrowed) folders.firstOrNull { f -> f in reachableFolderIds }
+                else folders.firstOrNull()
             it[word] = savedWord[SavedWords.word]
             it[translation] = savedWord[SavedWords.translation] ?: ""
             it[definition] = savedWord[SavedWords.definition]
@@ -275,15 +312,24 @@ class FlashcardRepository {
     ): BulkOutcome = dbQuery {
         // Under a group the folder stays the teacher's, so the words are read from their rows
         // while the cards are made for whoever asked.
-        val words = SavedWords.select {
-            (SavedWords.userId eq contentOwnerId) and savedWordCategoryClause(categoryId)
-        }.toList()
+        val allOwn = SavedWords.select { SavedWords.userId eq contentOwnerId }.toList()
+        val foldersByWord = SavedWordCategories.selectAll()
+            .where { SavedWordCategories.savedWordId inList allOwn.map { it[SavedWords.id] } }
+            .groupBy({ it[SavedWordCategories.savedWordId] }, { it[SavedWordCategories.categoryId] })
+
+        val words = when (categoryId) {
+            null -> allOwn
+            UNCATEGORIZED_CATEGORY_ID -> allOwn.filter { foldersByWord[it[SavedWords.id]].isNullOrEmpty() }
+            else -> allOwn.filter { categoryId in foldersByWord[it[SavedWords.id]].orEmpty() }
+        }
         val borrowed = contentOwnerId != userId
 
-        // Карточка на слово может быть только одна, поэтому по ключу держим её папку и id.
-        val existing = HashMap<String, Pair<Int, Int?>>()
+        // Карточка на значение может быть только одна, поэтому по ключу держим её папку и id.
+        // ⚠️ Ключ — написание и значение: по одному написанию два отмеченных значения одного
+        // слова делили бы одну карточку, то есть второе просто не попадало бы в колоду.
+        val existing = HashMap<Pair<String, String?>, Pair<Int, Int?>>()
         Flashcards.select { Flashcards.userId eq userId }.forEach {
-            existing[it[Flashcards.word].trim().lowercase()] =
+            existing[it[Flashcards.word].trim().lowercase() to it[Flashcards.senseId]] =
                 it[Flashcards.id].value to it[Flashcards.categoryId]
         }
 
@@ -294,9 +340,20 @@ class FlashcardRepository {
 
         words.forEach { row ->
             val word = row[SavedWords.word]
-            val key = word.trim().lowercase()
-            val target = row[SavedWords.categoryId]
-            val card = existing[key]
+            val key = word.trim().lowercase() to row[SavedWords.senseId]
+            // Filling one named folder files the cards there; filling «все папки» sends each
+            // card after its own word, and an unfiled word makes an unfiled card.
+            val target = when (categoryId) {
+                null -> foldersByWord[row[SavedWords.id]]?.firstOrNull()
+                UNCATEGORIZED_CATEGORY_ID -> null
+                else -> categoryId
+            }
+            // Точное значение, иначе — карточка, заведённая до того, как слово вообще было
+            // привязано к значению: она про это слово и её расписание надо сохранить, а не
+            // завести рядом вторую. Ключ снимается, чтобы её же не «усыновило» и второе
+            // значение того же слова.
+            val unpinnedKey = key.first to null
+            val card = existing[key] ?: existing[unpinnedKey]?.also { existing.remove(unpinnedKey) }
             if (card != null) {
                 val (cardId, cardCategory) = card
                 if (BulkFill.actionFor(cardCategory, target) == BulkFill.Action.ADOPT) {
@@ -434,11 +491,16 @@ class FlashcardRepository {
         else -> Op.build { Flashcards.categoryId eq categoryId }
     }
 
-    private fun savedWordCategoryClause(categoryId: Int?): Op<Boolean> = when (categoryId) {
-        null -> Op.TRUE
-        UNCATEGORIZED_CATEGORY_ID -> Op.build { SavedWords.categoryId.isNull() }
-        else -> Op.build { SavedWords.categoryId eq categoryId }
-    }
+    /**
+     * «Эта карточка про это значение».
+     *
+     * A card made before the word was pinned carries no sense id, and it is still the card for
+     * whatever sense the word is now pinned to — the alternative is a second card for a word
+     * that already has one, which is exactly the duplicate the schedule cannot survive.
+     */
+    private fun senseMatches(senseId: String?): Op<Boolean> =
+        if (senseId == null) Op.build { Flashcards.senseId.isNull() }
+        else Op.build { Flashcards.senseId.isNull() or (Flashcards.senseId eq senseId) }
 
     /**
      * Convert database row to Flashcard model

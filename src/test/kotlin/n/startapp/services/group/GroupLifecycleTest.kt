@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import n.startapp.database.TestDatabase
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.StudyGroupFolders
 import n.startapp.database.tables.StudyGroups
@@ -51,10 +52,13 @@ class GroupLifecycleTest {
             it[userId] = teacher
             it[name] = "Unit 5"
         }[Categories.id]
-        SavedWords.insert {
+        val savedWord = SavedWords.insert {
             it[userId] = teacher
             it[word] = "resolve"
             it[translation] = "решать"
+        }[SavedWords.id]
+        SavedWordCategories.insert {
+            it[savedWordId] = savedWord
             it[categoryId] = folder
         }
         val group = StudyGroups.insert {
@@ -186,8 +190,12 @@ class GroupLifecycleTest {
             assertEquals(1, StudyGroups.selectAll().where { StudyGroups.id eq room.group }.count().toInt())
             assertEquals(
                 1,
-                SavedWords.selectAll()
-                    .where { (SavedWords.userId eq room.teacher) and (SavedWords.categoryId eq room.folder) }
+                (SavedWordCategories innerJoin SavedWords)
+                    .selectAll()
+                    .where {
+                        (SavedWords.userId eq room.teacher) and
+                            (SavedWordCategories.categoryId eq room.folder)
+                    }
                     .count().toInt()
             )
         }

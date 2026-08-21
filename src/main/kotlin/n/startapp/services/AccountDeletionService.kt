@@ -6,6 +6,7 @@ import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.PushSubscriptions
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.StudyGroupFolders
 import n.startapp.database.tables.StudyGroupMembers
@@ -96,6 +97,13 @@ class AccountDeletionService {
             it[TestingRequests.userId] = null
         }
         Flashcards.deleteWhere { Flashcards.userId eq userId }
+        val savedWordIds = SavedWords
+            .select(SavedWords.id)
+            .where { SavedWords.userId eq userId }
+            .map { it[SavedWords.id] }
+        if (savedWordIds.isNotEmpty()) {
+            SavedWordCategories.deleteWhere { SavedWordCategories.savedWordId inList savedWordIds }
+        }
         SavedWords.deleteWhere { SavedWords.userId eq userId }
         Categories.deleteWhere { Categories.userId eq userId }
         Users.deleteWhere { Users.id eq userId }

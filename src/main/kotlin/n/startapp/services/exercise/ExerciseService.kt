@@ -222,7 +222,7 @@ class ExerciseService(
             ExerciseScope.SAVED -> folders.wordsFor(userId)
                 .filter { categoryId != null || !it.readOnly }
                 .map { it.word }
-                .filter { matchesCategory(it.categoryId, categoryId) }
+                .filter { matchesCategory(it.categoryIds, categoryId) }
                 .map { saved ->
                     val card = cardByWord[saved.word.trim().lowercase()]
                     PracticeWord(
@@ -262,10 +262,10 @@ class ExerciseService(
         return raw.map { it.copy(entry = articles[it.word.trim().lowercase()]) }
     }
 
-    private fun matchesCategory(wordCategory: Int?, filter: Int?): Boolean = when (filter) {
+    private fun matchesCategory(wordFolders: List<Int>, filter: Int?): Boolean = when (filter) {
         null -> true
-        UNCATEGORIZED_CATEGORY_ID -> wordCategory == null
-        else -> wordCategory == filter
+        UNCATEGORIZED_CATEGORY_ID -> wordFolders.isEmpty()
+        else -> filter in wordFolders
     }
 
     // ── The one model-written kind ────────────────────────────────────────────

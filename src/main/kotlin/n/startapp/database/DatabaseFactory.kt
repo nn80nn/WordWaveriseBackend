@@ -11,6 +11,7 @@ import n.startapp.database.tables.LexicalEntries
 import n.startapp.database.tables.LlmCache
 import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.PushSubscriptions
+import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
 import n.startapp.database.tables.StudyGroupFolders
@@ -39,7 +40,7 @@ object DatabaseFactory {
      * cannot emit takes the server down, and by then the deploy that did it is already live.
      */
     val ALL_TABLES: Array<Table> = arrayOf(
-        Users, Categories, SavedWords, Flashcards, ScraperCache, TestingRequests,
+        Users, Categories, SavedWords, SavedWordCategories, Flashcards, ScraperCache, TestingRequests,
         LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
         StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts
     )
@@ -79,6 +80,11 @@ object DatabaseFactory {
                 println("📋 Creating database tables if they do not exist...")
                 SchemaUtils.createMissingTablesAndColumns(*ALL_TABLES)
                 println("✅ Database tables ready")
+
+                // Создать недостающее мало: старый уникальный индекс на (user_id, word)
+                // пережил бы создание новой таблицы и продолжил запрещать второе значение
+                // слова — фича собралась бы, задеплоилась и не работала.
+                SavedWordFolderMigration.run()
             }
         } catch (e: Exception) {
             println("❌ Database initialization failed: ${e.message}")
