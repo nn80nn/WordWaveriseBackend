@@ -204,6 +204,36 @@ class LexicalEntryRepository {
     }
 
     /**
+     * The newest stored article for a lemma **with the aggregate it was built from**.
+     *
+     * ⚠️ The pair is the point. An article and a raw aggregate are two descriptions of one word,
+     * and the clients read pronunciation and audio from the raw one while reading the senses
+     * from the article. Serving an old article beside a freshly fetched aggregate mixes them:
+     * the fresh one is the *quick* aggregate — API sources only, no scrapers — so it carries no
+     * uk/us split, and the header fell back to FreeDictionary's `/tɑem/` while the entry right
+     * below it said `/taɪm/`. Whatever is shown, both halves have to come from the same reading
+     * of the word.
+     */
+    suspend fun findLatestStoredByLemma(lemma: String): StoredEntry? = dbQuery {
+        LexicalEntries.selectAll()
+            .where { LexicalEntries.lemma eq lemma.trim().lowercase() }
+            .orderBy(LexicalEntries.updatedAt to SortOrder.DESC)
+            .limit(1)
+            .firstOrNull()
+            ?.let { row ->
+                val entry = runCatching {
+                    json.decodeFromString<LexicalEntry>(row[LexicalEntries.entryJson])
+                }.getOrNull() ?: return@let null
+                StoredEntry(
+                    entry = entry,
+                    raw = row[LexicalEntries.rawJson].takeIf { it.isNotBlank() }
+                        ?.let { runCatching { json.decodeFromString<WordDetailResponse>(it) }.getOrNull() },
+                    sourceFingerprint = row[LexicalEntries.sourceFingerprint]
+                )
+            }
+    }
+
+    /**
      * The same lookup for a set of lemmas in one round trip. Refreshing a card
      * list one query at a time would put a query per card on a request that is
      * already reading every card.

@@ -134,6 +134,22 @@ class LookupService(
         .maximumSize(500)
         .build<String, AggregatedWord>()
 
+    /**
+     * The previous version of an article, held for as long as it is being replaced.
+     *
+     * A client polls every few seconds for up to four minutes while an article is written, and
+     * every one of those polls would otherwise re-read and re-parse both the entry and its raw
+     * aggregate. Right after a version bump that is *every* first lookup of *every* word.
+     *
+     * ⚠️ A separate cache from [hot], and it must stay separate: [hot] is keyed by the cache key
+     * a lookup checks, so putting the old article there would answer the very request that is
+     * supposed to replace it, and the rewrite would never happen.
+     */
+    private val superseded = Caffeine.newBuilder()
+        .expireAfterWrite(5, TimeUnit.MINUTES)
+        .maximumSize(500)
+        .build<String, java.util.Optional<StoredEntry>>()
+
     private data class AnnotationOutcome(
         val entry: LexicalEntry,
         /**
@@ -300,9 +316,25 @@ class LookupService(
         //
         // Deliberately NOT put in the hot cache under the new key: it would satisfy the very
         // lookup that is supposed to replace it, and the rewrite would never happen.
-        val superseded = runCatching { repository.findLatestByLemma(lemma) }
-            .onFailure { logger.warn("Could not read the previous article for '{}': {}", lemma, it.message) }
-            .getOrNull()
+        // ⚠️ Read as a pair — the article **and** the aggregate it was built from. The clients
+        // take pronunciation and audio from the raw half and the senses from the article half,
+        // so pairing an old article with the freshly fetched aggregate shows one word twice in
+        // two voices: the fresh aggregate here is the *quick* one, API sources only, with no
+        // uk/us split, and the header fell back to FreeDictionary's `/tɑem/` directly above an
+        // entry reading `/taɪm/`.
+        // ⚠️ "There is no previous article" is a cached answer too. Reading the Optional and
+        // falling through on empty would re-query on every poll for exactly the words that have
+        // nothing to find — the common case, and the one where the query is pure waste.
+        val remembered = this.superseded.getIfPresent(cacheKey)
+        val superseded = if (remembered != null) {
+            remembered.orElse(null)
+        } else {
+            runCatching { repository.findLatestStoredByLemma(lemma) }
+                .onFailure { logger.warn("Could not read the previous article for '{}': {}", lemma, it.message) }
+                .getOrNull()
+                .also { this.superseded.put(cacheKey, java.util.Optional.ofNullable(it)) }
+        }
+        val supersededRaw = superseded?.raw ?: aggregate.response
 
         degraded.getIfPresent(cacheKey)?.let { failed ->
             return LookupResponse(
@@ -311,10 +343,10 @@ class LookupService(
                 // A real article the model wrote beats one derived mechanically from raw data,
                 // even an older one. `degraded` still describes what just happened, so the
                 // clients keep retrying on the codes that are worth retrying.
-                entry = superseded ?: failed.entry,
+                entry = superseded?.entry ?: failed.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = failed.reason,
-                raw = aggregate.response
+                raw = if (superseded != null) supersededRaw else aggregate.response
             )
         }
 
@@ -391,11 +423,11 @@ class LookupService(
             outcome == null -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = superseded,
+                entry = superseded?.entry,
                 annotationStatus = AnnotationStatus.PENDING,
                 annotationNote = if (superseded != null) "superseded_article" else null,
                 retryAfterMs = RETRY_AFTER_MS,
-                raw = aggregate.response
+                raw = if (superseded != null) supersededRaw else aggregate.response
             )
             // Same reasoning as the cached-degraded branch above: the previous article was
             // written by the model and validated, this one was derived from raw data because
@@ -403,10 +435,10 @@ class LookupService(
             outcome.entry.degraded -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = superseded ?: outcome.entry,
+                entry = superseded?.entry ?: outcome.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = outcome.reason,
-                raw = outcome.raw ?: aggregate.response
+                raw = if (superseded != null) supersededRaw else (outcome.raw ?: aggregate.response)
             )
             else -> LookupResponse(
                 resolution = resolution,
