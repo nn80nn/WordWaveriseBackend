@@ -66,7 +66,7 @@ val LEXICAL_ENTRY_JSON_SCHEMA: String = """
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["definitionEn", "definitionRu", "translationsRu", "register", "cefr", "domain", "examples", "collocations", "synonyms", "antonyms", "sourceRefs", "generated", "usageNote"],
+                "required": ["definitionEn", "definitionRu", "translationsRu", "register", "countability", "cefr", "domain", "examples", "collocations", "synonyms", "antonyms", "sourceRefs", "generated", "usageNote"],
                 "properties": {
                   "definitionEn": { "type": "string" },
                   "definitionRu": { "type": "string" },
@@ -74,6 +74,10 @@ val LEXICAL_ENTRY_JSON_SCHEMA: String = """
                   "register": {
                     "type": "string",
                     "enum": ["neutral", "formal", "informal", "slang", "vulgar", "dated", "literary", "technical"]
+                  },
+                  "countability": {
+                    "type": ["string", "null"],
+                    "enum": ["countable", "uncountable", "both", null]
                   },
                   "cefr": { "type": ["string", "null"], "enum": ["A1", "A2", "B1", "B2", "C1", "C2", null] },
                   "domain": { "type": ["string", "null"] },

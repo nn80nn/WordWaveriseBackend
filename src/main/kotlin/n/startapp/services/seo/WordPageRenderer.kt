@@ -7,6 +7,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.lexical.PosGroup
+import n.startapp.models.lexical.Countability
 import n.startapp.models.lexical.Register
 import n.startapp.models.lexical.Sense
 import n.startapp.utils.EnvConfig
@@ -34,6 +35,19 @@ object WordPageRenderer {
         Register.DATED to "устаревшее",
         Register.LITERARY to "книжное",
         Register.TECHNICAL to "спец."
+    )
+
+    /**
+     * Spelled out rather than abbreviated to "исч."/"неисч.".
+     *
+     * This page is read by people who arrived from a search engine knowing nothing about the
+     * product, and by the crawler that put them there; an abbreviation only a regular would
+     * expand is worth nothing to either.
+     */
+    private val countabilityRu = mapOf(
+        Countability.COUNTABLE to "исчисляемое",
+        Countability.UNCOUNTABLE to "неисчисляемое",
+        Countability.BOTH to "исчисляемое и неисчисляемое"
     )
 
     // ── Public entry points ─────────────────────────────────────────────────
@@ -249,6 +263,8 @@ object WordPageRenderer {
 
         val badges = buildString {
             registerRu[sense.register]?.takeIf { it.isNotBlank() }
+                ?.let { append("<span class=\"tag\">${esc(it)}</span>") }
+            sense.countability?.let { countabilityRu[it] }
                 ?.let { append("<span class=\"tag\">${esc(it)}</span>") }
             sense.cefr?.takeIf { it.isNotBlank() }
                 ?.let { append("<span class=\"tag\">${esc(it)}</span>") }

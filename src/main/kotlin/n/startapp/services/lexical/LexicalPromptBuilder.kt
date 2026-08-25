@@ -10,7 +10,7 @@ import n.startapp.models.lexical.SourceRef
 object LexicalPromptBuilder {
 
     /** Bump on any prompt change. Part of the persistent cache key. */
-    const val PROMPT_VERSION = 3
+    const val PROMPT_VERSION = 4
 
     /**
      * The output contract, spelled out in the prompt as well as in `response_format`.
@@ -45,6 +45,7 @@ object LexicalPromptBuilder {
                   "definitionRu": "объяснение по-русски одним предложением",
                   "translationsRu": ["1-4 коротких русских эквивалента"],
                   "register": "neutral" | "formal" | "informal" | "slang" | "vulgar" | "dated" | "literary" | "technical",
+                  "countability": "countable" | "uncountable" | "both" | null,
                   "cefr": "A1" | "A2" | "B1" | "B2" | "C1" | "C2" | null,
                   "domain": "строка или null",
                   "examples": [{ "en": "предложение", "ru": "перевод", "sourceRef": число или null }],  // 1-2 штуки
@@ -62,6 +63,12 @@ object LexicalPromptBuilder {
 
         Обязательны и никогда не пустые: definitionEn, definitionRu, translationsRu (минимум 1),
         examples (1–2 штуки, с переводом). Значение без русского перевода будет отброшено.
+
+        countability заполняется ТОЛЬКО для существительных (pos = "noun"), у остальных частей
+        речи там строго null. Значение относится именно к этому смыслу, а не к слову целиком:
+        "paper" как материал — uncountable, "paper" как документ — countable. "both" ставится,
+        когда слово в этом же значении употребляется и так и так (например "coffee": "два кофе"
+        и "много кофе"). Если не уверен — null; неверная пометка хуже отсутствующей.
 
         Пиши компактно: два примера на значение достаточно, третий не нужен.
     """.trimIndent()
@@ -100,6 +107,8 @@ object LexicalPromptBuilder {
         7. Каждый пример — естественное полное предложение, содержащее заголовочное слово
            или его словоформу, обязательно с переводом на русский.
         8. Часть речи — только из списка схемы. Если фрагмент размечен неверно, исправь.
+        8a. Для каждого значения существительного проставь countability (countable /
+           uncountable / both). Для не-существительных — null.
         9. Если заголовок — фраза или идиома, сделай одну группу с pos "idiom" или "phrase"
            и НЕ разбивай её по частям речи входящих слов.
         10. Никакого markdown, никаких пояснений вне JSON.
@@ -125,6 +134,7 @@ object LexicalPromptBuilder {
         6. Каждый пример — естественное полное предложение с переводом на русский.
         7. Часть речи — только из списка схемы. Для идиом и фраз используй одну группу
            с pos "idiom" или "phrase".
+        7a. Для значений существительных проставь countability, для остальных — null.
         8. Никакого markdown, никаких пояснений вне JSON.
     """.trimIndent()
 

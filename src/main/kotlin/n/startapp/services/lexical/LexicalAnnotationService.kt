@@ -90,7 +90,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         val sources = buildSources(aggregate.sourceDefinitions)
         val partsOfSpeech = LexicalPromptBuilder.partsOfSpeech(sources)
 
-        return if (partsOfSpeech.size > 1) {
+        return if (PosGroupMerge.shouldSplitByPartOfSpeech(lemma, kind, partsOfSpeech)) {
             annotateByPartOfSpeech(lemma, queryForm, kind, aggregate, sources, partsOfSpeech, route)
         } else {
             annotateWhole(lemma, queryForm, kind, aggregate, sources, onlyPos = null, route = route)
@@ -151,7 +151,11 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                 latencyMs = usable.maxOf { it.usage.latencyMs }
             ),
             entry = base.copy(
-                posGroups = usable.flatMap { it.entry.posGroups },
+                // Not a flatMap: the sections each saw every fragment, so two of them can
+                // describe the same part of speech — and did, which is how `grow up` came back
+                // with its article printed twice under two `phrasal verb` groups carrying the
+                // same sense ids. See [PosGroupMerge].
+                posGroups = PosGroupMerge.merge(usable.map { it.entry.posGroups }),
                 // Whichever section answered them; the first is the one that was asked.
                 etymology = usable.firstNotNullOfOrNull { it.entry.etymology },
                 usageNotes = usable.firstOrNull { it.entry.usageNotes.isNotEmpty() }?.entry?.usageNotes.orEmpty(),

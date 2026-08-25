@@ -58,6 +58,8 @@ data class DraftSense(
     val definitionRu: String = "",
     val translationsRu: List<String> = emptyList(),
     val register: String = "neutral",
+    /** "countable" | "uncountable" | "both" | null. Only asked for, and only kept, on nouns. */
+    val countability: String? = null,
     val cefr: String? = null,
     val domain: String? = null,
     val examples: List<DraftExample> = emptyList(),
@@ -85,6 +87,15 @@ data class DraftCollocation(
 /** Unknown values fall back to NEUTRAL rather than failing the parse. */
 fun parseRegister(raw: String?): Register =
     Register.entries.firstOrNull { it.name.equals(raw?.trim(), ignoreCase = true) } ?: Register.NEUTRAL
+
+/**
+ * Unknown or absent values mean "not stated", not a guess.
+ *
+ * A wrong countability label is worse than none: the learner has no way to tell it is wrong,
+ * and the article is the thing they would check against.
+ */
+fun parseCountability(raw: String?): Countability? =
+    Countability.entries.firstOrNull { it.name.equals(raw?.trim(), ignoreCase = true) }
 
 fun parseLexicalKind(raw: String?): LexicalKind =
     LexicalKind.entries.firstOrNull { it.name.equals(raw?.trim(), ignoreCase = true) } ?: LexicalKind.WORD

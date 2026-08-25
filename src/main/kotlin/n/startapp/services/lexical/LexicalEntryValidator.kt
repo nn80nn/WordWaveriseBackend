@@ -2,12 +2,14 @@ package n.startapp.services.lexical
 
 import n.startapp.models.lexical.BilingualExample
 import n.startapp.models.lexical.Collocation
+import n.startapp.models.lexical.Countability
 import n.startapp.models.lexical.DraftEntry
 import n.startapp.models.lexical.DraftSense
 import n.startapp.models.lexical.LexicalKind
 import n.startapp.models.lexical.PosGroup
 import n.startapp.models.lexical.Sense
 import n.startapp.models.lexical.SourceRef
+import n.startapp.models.lexical.parseCountability
 import n.startapp.models.lexical.parseRegister
 
 data class ValidationResult(
@@ -80,7 +82,7 @@ object LexicalEntryValidator {
             val code = POS_CODES[pos] ?: pos.take(3)
 
             val senses = group.senses
-                .mapNotNull { sanitizeSense(it, sources, lemma, kind, forms, issues) }
+                .mapNotNull { sanitizeSense(it, sources, lemma, kind, pos, forms, issues) }
                 .mapIndexed { index, sense -> sense.copy(id = "$code${index + 1}") }
 
             if (senses.isEmpty()) {
@@ -126,6 +128,8 @@ object LexicalEntryValidator {
         sources: List<SourceRef>,
         lemma: String,
         kind: LexicalKind,
+        /** The group's part of speech, already normalised — countability is a noun-only fact. */
+        pos: String,
         forms: List<String>,
         issues: MutableList<String>
     ): Sense? {
@@ -149,6 +153,10 @@ object LexicalEntryValidator {
             definitionRu = draft.definitionRu.trim(),
             translationsRu = draft.translationsRu.map { it.trim() }.filter { it.isNotBlank() }.take(4),
             register = parseRegister(draft.register),
+            // Dropped outside nouns rather than trusted: models label verbs "uncountable" when
+            // the field is in front of them, and a grammatical label nobody can check is the
+            // kind of small wrongness that costs an article its authority.
+            countability = countabilityFor(pos, draft.countability, issues),
             cefr = draft.cefr?.trim()?.takeIf { it.isNotBlank() },
             domain = draft.domain?.trim()?.takeIf { it.isNotBlank() },
             examples = examples,
@@ -162,6 +170,19 @@ object LexicalEntryValidator {
             generated = generated,
             usageNote = draft.usageNote?.trim()?.takeIf { it.isNotBlank() }
         )
+    }
+
+    private fun countabilityFor(
+        pos: String,
+        raw: String?,
+        issues: MutableList<String>
+    ): Countability? {
+        val parsed = parseCountability(raw) ?: return null
+        if (pos != "noun") {
+            issues += "исчисляемость указана у части речи «$pos» — отброшена"
+            return null
+        }
+        return parsed
     }
 
     private fun sanitizeExamples(

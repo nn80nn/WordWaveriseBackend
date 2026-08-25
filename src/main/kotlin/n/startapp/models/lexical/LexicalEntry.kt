@@ -15,6 +15,16 @@ enum class LexicalKind { WORD, PHRASE, IDIOM, PHRASAL_VERB, ABBREVIATION, PROPER
 @Serializable
 enum class Register { NEUTRAL, FORMAL, INFORMAL, SLANG, VULGAR, DATED, LITERARY, TECHNICAL }
 
+/**
+ * Countability of a noun sense — the one grammatical fact a Russian learner cannot infer.
+ *
+ * It belongs to the **sense**, not to the word: `paper` is uncountable as material and countable
+ * as a document, and a label on the headword would be wrong for one of them whichever way it
+ * pointed. Null everywhere outside nouns, where the question does not arise.
+ */
+@Serializable
+enum class Countability { COUNTABLE, UNCOUNTABLE, BOTH }
+
 /** An example is only useful to a Russian learner with its translation, so both are required. */
 @Serializable
 data class BilingualExample(
@@ -44,6 +54,8 @@ data class Sense(
     /** 1–4 short Russian equivalents for THIS sense. Feeds cards and flashcards. */
     val translationsRu: List<String> = emptyList(),
     val register: Register = Register.NEUTRAL,
+    /** Nouns only; null for every other part of speech. See [Countability]. */
+    val countability: Countability? = null,
     val cefr: String? = null,
     val domain: String? = null,
     val examples: List<BilingualExample> = emptyList(),
