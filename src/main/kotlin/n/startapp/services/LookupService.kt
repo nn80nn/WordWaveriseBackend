@@ -290,11 +290,28 @@ class LookupService(
                 )
             }
 
+        // The article this word had before the current schema and prompt existed.
+        //
+        // ⚠️ Read by lemma, not by cache key — that is the point. A version bump makes every
+        // stored article a miss, and without this the reader of a word the corpus has served
+        // for months suddenly gets raw dictionary fragments back and waits three minutes for
+        // an article to be rewritten. What they had was not wrong, only out of date, and an
+        // out-of-date article beats no article by a distance that is not close.
+        //
+        // Deliberately NOT put in the hot cache under the new key: it would satisfy the very
+        // lookup that is supposed to replace it, and the rewrite would never happen.
+        val superseded = runCatching { repository.findLatestByLemma(lemma) }
+            .onFailure { logger.warn("Could not read the previous article for '{}': {}", lemma, it.message) }
+            .getOrNull()
+
         degraded.getIfPresent(cacheKey)?.let { failed ->
             return LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = failed.entry,
+                // A real article the model wrote beats one derived mechanically from raw data,
+                // even an older one. `degraded` still describes what just happened, so the
+                // clients keep retrying on the codes that are worth retrying.
+                entry = superseded ?: failed.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = failed.reason,
                 raw = aggregate.response
@@ -369,17 +386,24 @@ class LookupService(
         val outcome = withTimeoutOrNull(ANNOTATION_GRACE_MS) { job.await() }
 
         return when {
+            // Still being written. PENDING keeps the clients polling, so the fresh article
+            // replaces this one on screen the moment it lands.
             outcome == null -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
+                entry = superseded,
                 annotationStatus = AnnotationStatus.PENDING,
+                annotationNote = if (superseded != null) "superseded_article" else null,
                 retryAfterMs = RETRY_AFTER_MS,
                 raw = aggregate.response
             )
+            // Same reasoning as the cached-degraded branch above: the previous article was
+            // written by the model and validated, this one was derived from raw data because
+            // the model call failed. Older beats mechanical.
             outcome.entry.degraded -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = outcome.entry,
+                entry = superseded ?: outcome.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = outcome.reason,
                 raw = outcome.raw ?: aggregate.response

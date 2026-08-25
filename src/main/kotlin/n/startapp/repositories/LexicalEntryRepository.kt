@@ -127,6 +127,43 @@ class LexicalEntryRepository {
     }
 
     /**
+     * Which of [keys] the corpus already holds — "is this article the current one".
+     *
+     * The bulk form of [find], for the warm-up, which has to answer the same question for a
+     * couple of thousand words before it decides what to do first. Chunked because the list is
+     * the whole word list and a single `IN` of that size is a statement nobody wants to debug.
+     */
+    suspend fun existingKeys(keys: Collection<String>): Set<String> = dbQuery {
+        if (keys.isEmpty()) return@dbQuery emptySet()
+        keys.chunked(500).flatMapTo(mutableSetOf()) { chunk ->
+            LexicalEntries
+                .select(LexicalEntries.cacheKey)
+                .where { LexicalEntries.cacheKey inList chunk }
+                .map { it[LexicalEntries.cacheKey] }
+        }
+    }
+
+    /**
+     * Which of [lemmas] have **any** article at all, whatever version wrote it.
+     *
+     * ⚠️ A different question from [existingKeys], and keeping them apart is the whole point.
+     * The cache key carries the schema and prompt versions, so after a bump every word looks
+     * unannotated — which turned "warm the corpus" into "build the corpus again from scratch",
+     * and turned a warm word into one the reader waits three minutes for. A word with an older
+     * article is warm: it has something to show. It is merely out of date.
+     */
+    suspend fun lemmasWithAnyEntry(lemmas: Collection<String>): Set<String> = dbQuery {
+        if (lemmas.isEmpty()) return@dbQuery emptySet()
+        val wanted = lemmas.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
+        wanted.chunked(500).flatMapTo(mutableSetOf()) { chunk ->
+            LexicalEntries
+                .select(LexicalEntries.lemma)
+                .where { LexicalEntries.lemma inList chunk }
+                .map { it[LexicalEntries.lemma] }
+        }
+    }
+
+    /**
      * Finds the lemma an already-annotated entry files this surface form under.
      *
      * Matches the headword first, then the recorded inflected forms, which is what lets

@@ -26,6 +26,16 @@ data class WarmupStatus(
     val skipped: Int,
     val notFound: Int,
     val failed: Int,
+    /**
+     * Words with no article at all when the run started — the ones a reader waits for.
+     *
+     * Reported next to [staleQueued] because together they say what the run is for. After a
+     * prompt bump the second number is the whole corpus and the first is close to zero, and
+     * that is the moment an operator most needs to see that coverage was not lost.
+     */
+    val gaps: Int = 0,
+    /** Words that have an article from an older schema or prompt, queued behind the gaps. */
+    val staleQueued: Int = 0,
     val currentWord: String? = null,
     val wordsPerHour: Int,
     val startedAt: Long? = null,
@@ -65,7 +75,16 @@ data class WarmupStartResponse(
 class WarmupService(
     private val lookupService: LookupService,
     private val oracle: WordOracle? = null,
-    private val queue: n.startapp.repositories.WarmupQueueRepository? = null
+    private val queue: n.startapp.repositories.WarmupQueueRepository? = null,
+    /**
+     * The corpus, read directly — to decide what to warm **first**.
+     *
+     * `warm()` already answers "is this word done" per word, but by then the run has committed
+     * to an order. What the list needs before it starts is the same question asked in bulk, and
+     * a second one `warm()` cannot answer at all: whether the word has any article, current or
+     * not. See [WarmupOrder].
+     */
+    private val corpus: n.startapp.repositories.LexicalEntryRepository? = null
 ) {
     private val logger = LoggerFactory.getLogger(WarmupService::class.java)
 
@@ -78,6 +97,8 @@ class WarmupService(
     private val skipped = AtomicInteger()
     private val notFound = AtomicInteger()
     private val failed = AtomicInteger()
+    private val gaps = AtomicInteger()
+    private val staleQueued = AtomicInteger()
     private val current = AtomicReference<String?>(null)
     private val lastError = AtomicReference<String?>(null)
     private val startedAt = AtomicReference<Long?>(null)
@@ -146,6 +167,8 @@ class WarmupService(
         skipped = skipped.get(),
         notFound = notFound.get(),
         failed = failed.get(),
+        gaps = gaps.get(),
+        staleQueued = staleQueued.get(),
         currentWord = current.get(),
         wordsPerHour = perHourInUse.get(),
         startedAt = startedAt.get(),
@@ -163,6 +186,7 @@ class WarmupService(
 
         processed.set(0); written.set(0); alreadyPresent.set(0)
         skipped.set(0); notFound.set(0); failed.set(0)
+        gaps.set(0); staleQueued.set(0)
         lastError.set(null)
         total.set(0)
         startedAt.set(System.currentTimeMillis())
@@ -176,12 +200,18 @@ class WarmupService(
             // Composed inside the job because the queue lives in the database: computing it
             // before launching would mean blocking the caller of an admin endpoint on a query.
             val all = words()
-            val slice = if (limit > 0) all.take(limit) else all
+            // ⚠️ Ordered before the limit is applied, so "first N" means the N most urgent
+            // rather than the first N lines of the word list. See [WarmupOrder] for why the
+            // two questions — "any article?" and "the current article?" — have to be asked
+            // separately: answering only the second makes a version bump look like an empty
+            // corpus, and spends days rewriting pages a reader can already open.
+            val ordered = orderByUrgency(all)
+            val slice = if (limit > 0) ordered.take(limit) else ordered
             total.set(slice.size)
 
             logger.info(
-                "Warm-up starting: {} words at {}/hour (~{} min between words)",
-                slice.size, effectivePerHour, spacingMs / 60_000
+                "Warm-up starting: {} words at {}/hour (~{} min between words); {} missing, {} to upgrade",
+                slice.size, effectivePerHour, spacingMs / 60_000, gaps.get(), staleQueued.get()
             )
 
             for (word in slice) {
@@ -245,6 +275,42 @@ class WarmupService(
             current.set(null)
         }
         return true
+    }
+
+    /**
+     * Sorts the list so words with no article at all are warmed before words that merely have
+     * an out-of-date one, and records how many of each there were.
+     *
+     * Two bulk reads for the whole list rather than a question per word: the run is about to
+     * spend hours, and the decision of what to spend them on has to be made before the first
+     * word, not discovered one word at a time.
+     *
+     * A failure here is not worth cancelling a run over — the original order still works, it is
+     * just less well aimed.
+     */
+    private suspend fun orderByUrgency(words: List<String>): List<String> {
+        val entries = corpus ?: return words
+        return try {
+            val keys = words.associateWith { word ->
+                n.startapp.repositories.LexicalEntryRepository.cacheKey(
+                    lemma = word,
+                    kind = n.startapp.models.lexical.LexicalKind.WORD.name,
+                    promptVersion = n.startapp.services.lexical.LexicalPromptBuilder.PROMPT_VERSION,
+                    model = EnvConfig.aiModel
+                )
+            }
+            val current = entries.existingKeys(keys.values)
+            val hasCurrent = keys.filterValues { it in current }.keys
+            val hasAny = entries.lemmasWithAnyEntry(words)
+
+            val ordered = WarmupOrder.byUrgency(words, hasCurrent, hasAny)
+            gaps.set(words.count { WarmupOrder.urgencyOf(it, hasCurrent, hasAny) == WarmupOrder.Urgency.MISSING })
+            staleQueued.set(words.count { WarmupOrder.urgencyOf(it, hasCurrent, hasAny) == WarmupOrder.Urgency.STALE })
+            ordered
+        } catch (e: Exception) {
+            logger.warn("Could not order the warm-up list, using it as written: {}", e.message)
+            words
+        }
     }
 
     fun stop() {
