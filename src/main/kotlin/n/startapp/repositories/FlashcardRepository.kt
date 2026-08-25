@@ -2,6 +2,7 @@ package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.services.flashcard.BulkFill
+import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
@@ -317,10 +318,21 @@ class FlashcardRepository {
             .where { SavedWordCategories.savedWordId inList allOwn.map { it[SavedWords.id] } }
             .groupBy({ it[SavedWordCategories.savedWordId] }, { it[SavedWordCategories.categoryId] })
 
-        val words = when (categoryId) {
-            null -> allOwn
-            UNCATEGORIZED_CATEGORY_ID -> allOwn.filter { foldersByWord[it[SavedWords.id]].isNullOrEmpty() }
-            else -> allOwn.filter { categoryId in foldersByWord[it[SavedWords.id]].orEmpty() }
+        // Папка-группа наполняет колоду всем, что в ней лежит, включая вложенные папки —
+        // тем же набором слов, который увидит сессия по этой папке.
+        val wanted = categoryId?.takeIf { it != UNCATEGORIZED_CATEGORY_ID }?.let { id ->
+            (Categories.select(Categories.id)
+                .where { (Categories.id eq id) or (Categories.parentId eq id) })
+                .map { it[Categories.id] }
+                .toSet()
+        }
+        val words = when {
+            categoryId == null -> allOwn
+            categoryId == UNCATEGORIZED_CATEGORY_ID ->
+                allOwn.filter { foldersByWord[it[SavedWords.id]].isNullOrEmpty() }
+            else -> allOwn.filter { row ->
+                foldersByWord[row[SavedWords.id]].orEmpty().any { it in wanted!! }
+            }
         }
         val borrowed = contentOwnerId != userId
 
@@ -343,10 +355,14 @@ class FlashcardRepository {
             val key = word.trim().lowercase() to row[SavedWords.senseId]
             // Filling one named folder files the cards there; filling «все папки» sends each
             // card after its own word, and an unfiled word makes an unfiled card.
+            // Карточка ложится в ту папку, где слово реально лежит, а не в саму группу:
+            // группа — это полка, и «Урок 3» точнее, чем «Модуль 1», когда известно и то и то.
             val target = when (categoryId) {
                 null -> foldersByWord[row[SavedWords.id]]?.firstOrNull()
                 UNCATEGORIZED_CATEGORY_ID -> null
-                else -> categoryId
+                else -> foldersByWord[row[SavedWords.id]].orEmpty()
+                    .firstOrNull { it in wanted!! && it != categoryId }
+                    ?: categoryId
             }
             // Точное значение, иначе — карточка, заведённая до того, как слово вообще было
             // привязано к значению: она про это слово и её расписание надо сохранить, а не
@@ -488,8 +504,18 @@ class FlashcardRepository {
     private fun categoryClause(categoryId: Int?): Op<Boolean> = when (categoryId) {
         null -> Op.TRUE
         UNCATEGORIZED_CATEGORY_ID -> Op.build { Flashcards.categoryId.isNull() }
-        else -> Op.build { Flashcards.categoryId eq categoryId }
+        // ⚠️ Наименование папки-группы достаёт и её детей. Иначе группа была бы подписью и
+        // ничем больше: практиковать, задать и выдать классу можно только то, что фильтр видит.
+        // Подзапросом, а не расширенным списком в сигнатуре: у `categoryClause` семь вызывающих,
+        // и каждый пришлось бы учить дереву папок отдельно — семь мест, где это можно забыть.
+        else -> Op.build { Flashcards.categoryId inSubQuery selfAndChildren(categoryId) }
     }
+
+    /** [categoryId] плюс папки, лежащие в нём. Для обычной папки — она одна. */
+    private fun selfAndChildren(categoryId: Int) =
+        Categories.select(Categories.id).where {
+            (Categories.id eq categoryId) or (Categories.parentId eq categoryId)
+        }
 
     /**
      * «Эта карточка про это значение».

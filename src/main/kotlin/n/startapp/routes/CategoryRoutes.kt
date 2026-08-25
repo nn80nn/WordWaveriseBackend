@@ -14,8 +14,10 @@ import n.startapp.models.auth.CreateCategoryRequest
 import n.startapp.models.auth.ImportResult
 import n.startapp.models.auth.ShareLink
 import n.startapp.models.auth.SharedFolderPreview
+import n.startapp.models.auth.SharedSubfolderPreview
 import n.startapp.models.auth.SharedWordPreview
 import n.startapp.utils.EnvConfig
+import n.startapp.models.auth.SetParentRequest
 import n.startapp.models.auth.SetWordCategoryRequest
 import n.startapp.models.auth.UpdateCategoryRequest
 import n.startapp.repositories.CategoryRepository
@@ -47,7 +49,9 @@ fun Route.categoryRoutes() {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                 val request = call.receive<CreateCategoryRequest>()
                 if (request.name.isBlank()) throw BadRequestException("Category name cannot be empty")
-                val category = categoryRepository.create(userId, request.name, request.color)
+                val category = categoryRepository.create(
+                    userId, request.name, request.color, request.parentId
+                )
                 call.respond(HttpStatusCode.Created, ApiResponse.success(category))
             }
 
@@ -106,6 +110,24 @@ fun Route.categoryRoutes() {
                 call.respond(ApiResponse.success("Updated"))
             }
 
+            /**
+             * PUT /api/categories/{id}/parent — file the folder in a group, or take it back out.
+             *
+             * Separate from the rename so that "move to the root" and "leave it where it is" are
+             * different requests. On one endpoint they would be the same bytes.
+             */
+            put("/{id}/parent") {
+                val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
+                val categoryId = call.parameters["id"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid category id")
+                val request = call.receive<SetParentRequest>()
+
+                if (!categoryRepository.setParent(userId, categoryId, request.parentId)) {
+                    throw NotFoundException("Category not found")
+                }
+                call.respond(ApiResponse.success("Moved"))
+            }
+
             // Delete a category (words moved to uncategorized)
             delete("/{id}") {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
@@ -162,7 +184,11 @@ fun Route.sharedFolderRoutes() {
         val folder = categoryRepository.findByShareToken(token)
             ?: throw NotFoundException("This folder is not shared")
 
+        // Уже со вложенными папками: `findByCategory` читает группу целиком, и превью обязано
+        // показывать ровно то, что уедет получателю.
         val words = savedWordRepository.findByCategory(folder.ownerId, folder.id)
+        val children = categoryRepository.children(folder.id)
+
         call.respond(
             ApiResponse.success(
                 SharedFolderPreview(
@@ -170,6 +196,12 @@ fun Route.sharedFolderRoutes() {
                     wordCount = words.size,
                     sample = words.take(12).map {
                         SharedWordPreview(word = it.word, translation = it.translation)
+                    },
+                    folders = children.map { child ->
+                        SharedSubfolderPreview(
+                            name = child.name,
+                            wordCount = words.count { child.id in it.categoryIds }
+                        )
                     }
                 )
             )
@@ -192,7 +224,23 @@ fun Route.sharedFolderRoutes() {
 
             val name = categoryRepository.freeName(userId, folder.name)
             val created = categoryRepository.create(userId, name, null)
-            val (added, alreadyHad) = savedWordRepository.copyInto(userId, created.id, words)
+
+            // ⚠️ Группа копируется формой, а не содержимым. Пять уроков, слитых в одну папку, —
+            // это не та папка, которой делились: расписание занятий превращается в список слов,
+            // и восстановить его получателю уже не из чего.
+            //
+            // Имена вложенных папок берутся как есть, без `freeName`: «Урок 1» внутри «Модуля 2»
+            // ни с чем не спорит, а «Урок 1 (3)» рядом с «Уроком 1» выглядел бы ошибкой копии.
+            val mirror = mutableMapOf(folder.id to created.id)
+            categoryRepository.children(folder.id).forEach { child ->
+                mirror[child.id] =
+                    categoryRepository.create(userId, child.name, child.color, created.id).id
+            }
+
+            val placements = words.map { word ->
+                word to word.categoryIds.mapNotNull { mirror[it] }.distinct()
+            }
+            val (added, alreadyHad) = savedWordRepository.copyInto(userId, placements)
 
             call.respond(
                 HttpStatusCode.Created,
@@ -201,7 +249,8 @@ fun Route.sharedFolderRoutes() {
                         categoryId = created.id,
                         name = created.name,
                         added = added,
-                        alreadyHad = alreadyHad
+                        alreadyHad = alreadyHad,
+                        folders = mirror.size - 1
                     )
                 )
             )

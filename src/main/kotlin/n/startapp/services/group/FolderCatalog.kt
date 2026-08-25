@@ -2,6 +2,7 @@ package n.startapp.services.group
 
 import n.startapp.models.auth.CategoryDTO
 import n.startapp.models.auth.SavedWord
+import n.startapp.repositories.CategoryRepository
 import n.startapp.repositories.SavedWordRepository
 
 /** A word as one particular reader meets it, and how it reached them. */
@@ -21,7 +22,8 @@ data class VisibleWord(
  */
 class FolderCatalog(
     private val resolver: FolderAccessResolver,
-    private val savedWords: SavedWordRepository
+    private val savedWords: SavedWordRepository,
+    private val categories: CategoryRepository = CategoryRepository()
 ) {
 
     suspend fun foldersFor(userId: Int): List<CategoryDTO> {
@@ -34,17 +36,29 @@ class FolderCatalog(
             .distinct()
             .associateWith { savedWords.countByCategory(it) }
 
-        return visible.map { folder ->
+        val reachable = visible.mapTo(mutableSetOf()) { it.categoryId }
+
+        val flat = visible.map { folder ->
             CategoryDTO(
                 id = folder.categoryId,
                 name = folder.name,
                 color = folder.color,
                 wordCount = countsByOwner[folder.contentOwnerId]?.get(folder.categoryId) ?: 0,
+                // ⚠️ Родитель, до которого читатель не дотягивается, — это не родитель.
+                // Учитель может выдать классу один урок без модуля, в котором тот лежит;
+                // назвать модуль значило бы и рассказать о его существовании, и заставить
+                // клиент рисовать ветку, которой у него нет.
+                parentId = folder.parentId?.takeIf { it in reachable },
                 groupId = folder.groupId,
                 groupName = folder.groupName,
                 readOnly = folder.readOnly
             )
         }
+
+        // Считается на собранном списке, потому что складывать можно только видимое: дети,
+        // до которых читатель не дотянулся, не должны попадать в число рядом с кнопкой.
+        val counts = flat.associate { it.id to it.wordCount }
+        return categories.withGroupCounts(flat, counts)
     }
 
     /**

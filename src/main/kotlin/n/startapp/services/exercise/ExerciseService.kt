@@ -20,6 +20,7 @@ import n.startapp.models.exercise.ExerciseSource
 import n.startapp.repositories.FlashcardRepository
 import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.repositories.LlmCacheRepository
+import n.startapp.repositories.CategoryRepository
 import n.startapp.repositories.SavedWordRepository
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.LlmJson
@@ -60,7 +61,8 @@ class ExerciseService(
     private val flashcards: FlashcardRepository = FlashcardRepository(),
     private val cache: LlmCacheRepository? = null,
     /** What the learner may practise: their own words, plus the ones their groups lend them. */
-    private val folders: FolderCatalog = FolderCatalog(FolderAccessResolver(), savedWords)
+    private val folders: FolderCatalog = FolderCatalog(FolderAccessResolver(), savedWords),
+    private val categories: CategoryRepository = CategoryRepository()
 ) {
     private val logger = LoggerFactory.getLogger(ExerciseService::class.java)
     private val json = Json { isLenient = true; ignoreUnknownKeys = true }
@@ -199,6 +201,14 @@ class ExerciseService(
      * towards anything is the reason exercise modes get abandoned.
      */
     private suspend fun pool(userId: Int, categoryId: Int?, scope: ExerciseScope): List<PracticeWord> {
+        // Названная папка-группа отдаёт и то, что в ней лежит. Карточки расширяет сам запрос
+        // (`categoryClause`), а сохранённые слова фильтруются здесь, в памяти, — поэтому набор
+        // надо получить явно, иначе одна и та же папка практиковалась бы по-разному в двух
+        // режимах: «мои слова» пустая, «карточки» полная.
+        val scopeIds = categoryId
+            ?.takeIf { it != UNCATEGORIZED_CATEGORY_ID }
+            ?.let { categories.selfAndChildren(it).toSet() }
+
         val cards = when (scope) {
             ExerciseScope.DUE -> flashcards.getDueFlashcards(userId, categoryId)
             ExerciseScope.FLASHCARDS -> flashcards.getAllByUser(userId, categoryId)
@@ -222,7 +232,7 @@ class ExerciseService(
             ExerciseScope.SAVED -> folders.wordsFor(userId)
                 .filter { categoryId != null || !it.readOnly }
                 .map { it.word }
-                .filter { matchesCategory(it.categoryIds, categoryId) }
+                .filter { matchesCategory(it.categoryIds, categoryId, scopeIds) }
                 .map { saved ->
                     val card = cardByWord[saved.word.trim().lowercase()]
                     PracticeWord(
@@ -262,10 +272,15 @@ class ExerciseService(
         return raw.map { it.copy(entry = articles[it.word.trim().lowercase()]) }
     }
 
-    private fun matchesCategory(wordFolders: List<Int>, filter: Int?): Boolean = when (filter) {
+    private fun matchesCategory(
+        wordFolders: List<Int>,
+        filter: Int?,
+        /** [filter] together with the folders inside it; null for the two special filters. */
+        scopeIds: Set<Int>?
+    ): Boolean = when (filter) {
         null -> true
         UNCATEGORIZED_CATEGORY_ID -> wordFolders.isEmpty()
-        else -> filter in wordFolders
+        else -> wordFolders.any { it in scopeIds.orEmpty() }
     }
 
     // ── The one model-written kind ────────────────────────────────────────────

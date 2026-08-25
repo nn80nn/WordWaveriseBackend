@@ -34,7 +34,15 @@ data class ResolvedFolder(
     val groupId: Int?,
     val groupName: String?,
     val name: String,
-    val color: String?
+    val color: String?,
+    /**
+     * The group this folder is filed under, as stored.
+     *
+     * ⚠️ May name a folder this reader cannot see — a teacher can hand out one lesson without
+     * the module it sits in. Trimming that is [FolderCatalog]'s job, because only the finished
+     * list knows what else the reader got.
+     */
+    val parentId: Int? = null
 ) {
     val readOnly: Boolean get() = role != FolderRole.OWNER
 }
@@ -84,7 +92,8 @@ class FolderAccessResolver {
                     groupId = null,
                     groupName = null,
                     name = row[Categories.name],
-                    color = row[Categories.color]
+                    color = row[Categories.color],
+                    parentId = row[Categories.parentId]
                 )
             }
 
@@ -106,7 +115,8 @@ class FolderAccessResolver {
                     groupId = group.id,
                     groupName = group.name,
                     name = row[Categories.name],
-                    color = row[Categories.color]
+                    color = row[Categories.color],
+                    parentId = row[Categories.parentId]
                 )
             }
 
@@ -134,7 +144,8 @@ class FolderAccessResolver {
             groupId = group?.id,
             groupName = group?.name,
             name = row[Categories.name],
-            color = row[Categories.color]
+            color = row[Categories.color],
+            parentId = row[Categories.parentId]
         )
     }
 
@@ -185,12 +196,27 @@ class FolderAccessResolver {
             .associate { it[StudyGroups.id] to GroupRef(it[StudyGroups.id], it[StudyGroups.name]) }
         if (groups.isEmpty()) return emptyMap()
 
-        return StudyGroupFolders.selectAll()
+        val handedOut = StudyGroupFolders.selectAll()
             .where { StudyGroupFolders.groupId inList groups.keys }
             .mapNotNull { row ->
                 val group = groups[row[StudyGroupFolders.groupId]] ?: return@mapNotNull null
                 row[StudyGroupFolders.categoryId] to group
             }
             .toMap()
+        if (handedOut.isEmpty()) return handedOut
+
+        // ⚠️ Выданная папка-группа отдаёт классу и то, что в ней лежит. Иначе учитель раздаёт
+        // «Модуль 1», а ученик открывает пустую полку: слова лежат в уроках внутри неё, и
+        // выдавать их пришлось бы поштучно — то есть группа не была бы группой.
+        val children = Categories.selectAll()
+            .where { Categories.parentId inList handedOut.keys }
+            .mapNotNull { row ->
+                val group = handedOut[row[Categories.parentId]] ?: return@mapNotNull null
+                row[Categories.id] to group
+            }
+
+        // Своё членство главнее: папка, выданная и напрямую, и в составе группы, называется той
+        // группой, которую учитель выдал явно.
+        return children.toMap() + handedOut
     }
 }

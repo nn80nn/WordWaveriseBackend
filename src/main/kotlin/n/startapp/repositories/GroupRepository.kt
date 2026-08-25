@@ -355,6 +355,25 @@ class GroupRepository {
             .where { StudyGroupFolders.groupId eq groupId }
             .map { it[StudyGroupFolders.categoryId] }
 
+    /**
+     * A folder together with whatever is filed inside it.
+     *
+     * ⚠️ Both sides of the sweep need this. Handing out a group hands out its children, so a
+     * student's cards can sit in a child's `category_id` — and if only the group itself were
+     * swept, those cards would stay filed in a folder that has just vanished from their list.
+     * Expanding what is still reachable matters just as much: a teacher can give the module to
+     * one class and a single lesson from it to another, and leaving the first must not unfile
+     * the lesson the second still gives.
+     */
+    private fun withChildrenInTx(ids: Collection<Int>): Set<Int> {
+        if (ids.isEmpty()) return emptySet()
+        val children = Categories
+            .select(Categories.id)
+            .where { Categories.parentId inList ids }
+            .map { it[Categories.id] }
+        return ids.toSet() + children
+    }
+
     /** Which of [losing] the student stops being able to reach once they leave [leavingGroupId]. */
     private fun foldersToUnfileInTx(userId: Int, leavingGroupId: Int, losing: List<Int>): Set<Int> {
         if (losing.isEmpty()) return emptySet()
@@ -369,13 +388,15 @@ class GroupRepository {
         val stillReachable = if (otherGroupIds.isEmpty()) {
             emptySet()
         } else {
-            StudyGroupFolders
-                .select(StudyGroupFolders.categoryId)
-                .where { StudyGroupFolders.groupId inList otherGroupIds }
-                .mapTo(mutableSetOf()) { it[StudyGroupFolders.categoryId] }
+            withChildrenInTx(
+                StudyGroupFolders
+                    .select(StudyGroupFolders.categoryId)
+                    .where { StudyGroupFolders.groupId inList otherGroupIds }
+                    .map { it[StudyGroupFolders.categoryId] }
+            )
         }
 
-        return GroupSweep.foldersToUnfile(losing.toSet(), stillReachable)
+        return GroupSweep.foldersToUnfile(withChildrenInTx(losing), stillReachable)
     }
 
     private fun unfileInTx(userId: Int, categoryIds: Set<Int>) {

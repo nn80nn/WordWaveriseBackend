@@ -8,6 +8,8 @@ import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.StudyGroupFolders
+import n.startapp.exceptions.BadRequestException
+import n.startapp.exceptions.NotFoundException
 import n.startapp.models.auth.CategoryDTO
 import n.startapp.utils.ShortToken
 import org.jetbrains.exposed.sql.*
@@ -22,7 +24,8 @@ class CategoryRepository {
         id = row[Categories.id],
         name = row[Categories.name],
         color = row[Categories.color],
-        wordCount = 0
+        wordCount = 0,
+        parentId = row[Categories.parentId]
     )
 
     suspend fun findByUserId(userId: Int): List<CategoryDTO> = dbQuery {
@@ -33,22 +36,119 @@ class CategoryRepository {
             .groupBy(SavedWordCategories.categoryId)
             .associate { it[SavedWordCategories.categoryId] to it[filed].toInt() }
 
-        Categories.selectAll()
+        val rows = Categories.selectAll()
             .where { Categories.userId eq userId }
             .orderBy(Categories.createdAt to SortOrder.ASC)
-            .map { row ->
-                rowToDTO(row).copy(wordCount = counts[row[Categories.id]] ?: 0)
-            }
+            .map { rowToDTO(it) }
+
+        withGroupCounts(rows, counts)
     }
 
-    suspend fun create(userId: Int, name: String, color: String?): CategoryDTO = dbQuery {
+    /**
+     * A group's word count is its own plus its children's.
+     *
+     * The number has to match what the folder filter returns, and that filter reaches children —
+     * otherwise a group reads "0 слов" beside a practice button that works.
+     */
+    fun withGroupCounts(folders: List<CategoryDTO>, counts: Map<Int, Int>): List<CategoryDTO> {
+        val childrenOf = folders.filter { it.parentId != null }.groupBy { it.parentId!! }
+        return folders.map { folder ->
+            val own = counts[folder.id] ?: 0
+            val fromChildren = childrenOf[folder.id].orEmpty().sumOf { counts[it.id] ?: 0 }
+            folder.copy(wordCount = own + fromChildren)
+        }
+    }
+
+    suspend fun create(
+        userId: Int,
+        name: String,
+        color: String?,
+        parentId: Int? = null
+    ): CategoryDTO = dbQuery {
+        val parent = parentId?.let { requireUsableParentInTx(userId, it) }
         val stmt = Categories.insert {
             it[Categories.userId] = userId
             it[Categories.name] = name.trim()
             it[Categories.color] = color
+            it[Categories.parentId] = parent
         }
         val id = stmt[Categories.id]
-        CategoryDTO(id = id, name = name.trim(), color = color, wordCount = 0)
+        CategoryDTO(id = id, name = name.trim(), color = color, wordCount = 0, parentId = parent)
+    }
+
+    // ── Groups of folders ─────────────────────────────────────────────────
+
+    /**
+     * Files [categoryId] under [parentId], or takes it back out to the root when that is null.
+     *
+     * @throws BadRequestException when the move would build something deeper than one level, or
+     *   point a folder at itself. Both are refused rather than silently flattened: a request the
+     *   server "fixes" leaves the user looking at a tree they did not ask for and cannot explain.
+     */
+    suspend fun setParent(userId: Int, categoryId: Int, parentId: Int?): Boolean = dbQuery {
+        val own = Categories.selectAll()
+            .where { (Categories.id eq categoryId) and (Categories.userId eq userId) }
+            .singleOrNull()
+            ?: return@dbQuery false
+
+        if (parentId == null) {
+            Categories.update({ Categories.id eq categoryId }) { it[Categories.parentId] = null }
+            return@dbQuery true
+        }
+
+        if (parentId == categoryId) throw BadRequestException("Папка не может лежать в самой себе")
+
+        // A folder that is already a group cannot also be a member of one — that is the second
+        // level, and it is the level where "which words does this filter reach" stops having an
+        // answer everybody agrees on.
+        val hasChildren = Categories.selectAll()
+            .where { Categories.parentId eq categoryId }
+            .count() > 0
+        if (hasChildren) {
+            throw BadRequestException("В этой папке уже лежат другие папки — её нельзя вложить")
+        }
+        // The row is read for its side effect: it refuses a parent that is not the caller's, or
+        // that is itself filed under someone.
+        requireUsableParentInTx(userId, parentId)
+
+        Categories.update({ Categories.id eq categoryId }) { it[Categories.parentId] = parentId }
+        own[Categories.id] > 0
+    }
+
+    /** The folders filed under [categoryId] — empty for a plain folder. */
+    suspend fun childIds(categoryId: Int): List<Int> = dbQuery { childIdsInTx(categoryId) }
+
+    /** The folders filed under [categoryId], oldest first — the order they were made in. */
+    suspend fun children(categoryId: Int): List<CategoryDTO> = dbQuery {
+        Categories.selectAll()
+            .where { Categories.parentId eq categoryId }
+            .orderBy(Categories.createdAt to SortOrder.ASC)
+            .map { rowToDTO(it) }
+    }
+
+    /**
+     * [categoryId] together with whatever is filed under it.
+     *
+     * The one shape every folder filter wants: for a plain folder it is just the folder, so
+     * callers need no branch of their own.
+     */
+    suspend fun selfAndChildren(categoryId: Int): List<Int> =
+        dbQuery { listOf(categoryId) + childIdsInTx(categoryId) }
+
+    private fun childIdsInTx(categoryId: Int): List<Int> =
+        Categories.select(Categories.id)
+            .where { Categories.parentId eq categoryId }
+            .map { it[Categories.id] }
+
+    private fun requireUsableParentInTx(userId: Int, parentId: Int): Int {
+        val parent = Categories.selectAll()
+            .where { (Categories.id eq parentId) and (Categories.userId eq userId) }
+            .singleOrNull()
+            ?: throw NotFoundException("Папка-группа не найдена")
+        if (parent[Categories.parentId] != null) {
+            throw BadRequestException("Папки вкладываются только на один уровень")
+        }
+        return parentId
     }
 
     suspend fun update(userId: Int, categoryId: Int, name: String): Boolean = dbQuery {
@@ -73,6 +173,14 @@ class CategoryRepository {
             .where { (Categories.id eq categoryId) and (Categories.userId eq userId) }
             .count() > 0
         if (!owned) return@dbQuery false
+
+        // Дети переживают родителя и становятся корневыми. Группа — это способ разложить
+        // папки, а не владение ими: удалить полку не значит выбросить всё, что на ней стояло.
+        // ⚠️ И это шестая ссылка на categories.id — собственная. Оставленная, она валит
+        // удаление внешним ключом, а не «просто не работает».
+        Categories.update({ Categories.parentId eq categoryId }) {
+            it[Categories.parentId] = null
+        }
 
         // Пятая внешняя ссылка на categories.id. Пропущенная означает не «фича не
         // работает», а 500 без объяснений при удалении папки.

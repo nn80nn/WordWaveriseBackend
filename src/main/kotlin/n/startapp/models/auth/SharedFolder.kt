@@ -14,7 +14,21 @@ data class SharedFolderPreview(
     val name: String,
     val wordCount: Int,
     /** The first words, so the recipient can tell what kind of folder this is. */
-    val sample: List<SharedWordPreview>
+    val sample: List<SharedWordPreview>,
+    /**
+     * The folders inside this one, when a whole group is being shared. Empty for a plain folder.
+     *
+     * Named in the preview because the shape is part of what is being handed over: "12 слов"
+     * describes a list, "12 слов в трёх уроках" describes a course, and the recipient is
+     * deciding which of those they are accepting.
+     */
+    val folders: List<SharedSubfolderPreview> = emptyList()
+)
+
+@Serializable
+data class SharedSubfolderPreview(
+    val name: String,
+    val wordCount: Int
 )
 
 @Serializable
@@ -42,5 +56,7 @@ data class ImportResult(
     val categoryId: Int,
     val name: String,
     val added: Int,
-    val alreadyHad: Int
+    val alreadyHad: Int,
+    /** How many folders the copy contains, when a group was taken. Zero for a plain folder. */
+    val folders: Int = 0
 )

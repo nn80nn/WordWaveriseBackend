@@ -2,6 +2,7 @@ package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Flashcards
+import n.startapp.database.tables.Categories
 import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.models.auth.SavedWord
@@ -234,11 +235,22 @@ class SavedWordRepository {
     }
 
     /** Every word filed in one folder, in the order it was saved. */
+    /**
+     * Слова папки — и вложенных в неё папок, если это группа.
+     *
+     * ⚠️ Тот же набор, что вернёт фильтр по этой папке где угодно ещё. Разойтись им нельзя:
+     * поделиться группой и получить не то, что в ней практикуется, — это не «другая выборка»,
+     * а неверная копия у того, кому её прислали.
+     */
     suspend fun findByCategory(userId: Int, categoryId: Int): List<SavedWord> = dbQuery {
+        val scope = Categories.select(Categories.id)
+            .where { (Categories.id eq categoryId) or (Categories.parentId eq categoryId) }
+            .map { it[Categories.id] }
         val ids = SavedWordCategories
             .select(SavedWordCategories.savedWordId)
-            .where { SavedWordCategories.categoryId eq categoryId }
+            .where { SavedWordCategories.categoryId inList scope }
             .map { it[SavedWordCategories.savedWordId] }
+            .distinct()
         if (ids.isEmpty()) return@dbQuery emptyList()
 
         SavedWords.selectAll()
@@ -263,22 +275,39 @@ class SavedWordRepository {
      *
      * @return how many were added, and how many were already there.
      */
-    suspend fun copyInto(userId: Int, categoryId: Int, words: List<SavedWord>): Pair<Int, Int> = dbQuery {
+    suspend fun copyInto(userId: Int, categoryId: Int, words: List<SavedWord>): Pair<Int, Int> =
+        copyInto(userId, words.map { it to listOf(categoryId) })
+
+    /**
+     * The same copy, but each word carries the folders it should land in.
+     *
+     * This is what taking a **group** of folders needs: the shape is part of what was shared, so
+     * flattening five lessons into one folder hands over something the sharer never had. Counting
+     * happens once per word rather than once per placement — a word filed in two lessons is one
+     * word the recipient gained, and reporting it twice makes "N новых" larger than the folder.
+     */
+    suspend fun copyInto(userId: Int, placements: List<Pair<SavedWord, List<Int>>>): Pair<Int, Int> = dbQuery {
         val existing = SavedWords.selectAll()
             .where { SavedWords.userId eq userId }
-            .associateBy(
+            .associateByTo(
+                HashMap(),
                 { it[SavedWords.word].trim().lowercase() to it[SavedWords.senseId] },
                 { it[SavedWords.id] }
             )
 
         var added = 0
         var alreadyHad = 0
-        for (source in words) {
+        // Одно и то же слово может лежать в двух уроках присланной группы; строка у получателя
+        // при этом одна, и в отчёте она обязана быть одной.
+        val seen = HashSet<Pair<String, String?>>()
+
+        for ((source, targets) in placements) {
+            if (targets.isEmpty()) continue
             val key = source.word.trim().lowercase() to source.senseId
             val mine = existing[key]
             if (mine != null) {
-                link(mine, listOf(categoryId))
-                alreadyHad++
+                link(mine, targets)
+                if (seen.add(key)) alreadyHad++
                 continue
             }
             val id = SavedWords.insert {
@@ -291,8 +320,11 @@ class SavedWordRepository {
                 // то же слово, но с другим смыслом — то есть не ту папку, которой делились.
                 it[senseId] = source.senseId
             }[SavedWords.id]
-            link(id, listOf(categoryId))
-            added++
+            link(id, targets)
+            // Вторая копия того же слова в другой папке группы — это та же строка: без этого
+            // она вставлялась бы второй раз и получатель учил бы одно и то же дважды.
+            existing[key] = id
+            if (seen.add(key)) added++
         }
         added to alreadyHad
     }
