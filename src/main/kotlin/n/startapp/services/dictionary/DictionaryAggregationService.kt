@@ -217,7 +217,8 @@ class DictionaryAggregationService {
                     partOfSpeech = sense.pos ?: "",
                     definition = sense.definition,
                     example = sense.examples.firstOrNull(),
-                    source = enrichment.source
+                    source = enrichment.source,
+                    entryIndex = sense.entryIndex
                 )
             }
         }

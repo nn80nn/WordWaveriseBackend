@@ -69,5 +69,14 @@ data class DetailedDefinition(
     val partOfSpeech: String,
     val definition: String,
     val example: String? = null,
-    val source: String? = null
+    val source: String? = null,
+    /**
+     * Which headword block of its source printed this definition, when the source has blocks.
+     *
+     * Part of speech is the coarse answer to "is this the same word", and it runs out on
+     * `lead`: the metal and the front are both nouns, printed in different blocks under
+     * different pronunciations. Kept so the fragment budget can spread across blocks rather
+     * than spend itself inside one of them — see [n.startapp.services.dictionary.DefinitionBudget].
+     */
+    val entryIndex: Int? = null
 )

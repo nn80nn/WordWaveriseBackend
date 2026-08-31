@@ -11,8 +11,11 @@ import n.startapp.models.dictionary.DetailedDefinition
  * `lead` the noun and gives the verb more than ten senses, so the metal, the pencil and the
  * dog's lead never reached the aggregate — and with them went the only block pronounced /led/.
  *
- * The budget is therefore spent round-robin across parts of speech. Order inside one part of
- * speech is untouched: dictionaries list their most common sense first, and that is information.
+ * The budget is therefore spent round-robin across headword blocks. Blocks, not parts of speech:
+ * `lead` the metal and `lead` the front are both nouns, printed under different pronunciations,
+ * and a budget spread only by part of speech still gave the noun's whole share to whichever of
+ * them came first. Order inside one block is untouched: dictionaries list their most common
+ * sense first, and that is information.
  */
 object DefinitionBudget {
 
@@ -27,13 +30,15 @@ object DefinitionBudget {
         return unique
             .groupBy { it.source?.uppercase() ?: "UNKNOWN" }
             .values
-            .flatMap { perSource -> roundRobinByPartOfSpeech(perSource).take(perSourceLimit) }
+            .flatMap { perSource -> roundRobinByHeadword(perSource).take(perSourceLimit) }
     }
 
-    /** noun, verb, adjective, noun, verb, … — one from each in turn. */
-    private fun roundRobinByPartOfSpeech(defs: List<DetailedDefinition>): List<DetailedDefinition> {
+    /** One from each headword block in turn: verb, noun, adjective, verb, noun, … */
+    private fun roundRobinByHeadword(defs: List<DetailedDefinition>): List<DetailedDefinition> {
         val buckets = defs
-            .groupBy { it.partOfSpeech.lowercase().trim() }
+            // A source without blocks (the APIs) falls back to part of speech, which is all it
+            // knows — there the two questions are the same question.
+            .groupBy { it.partOfSpeech.lowercase().trim() to it.entryIndex }
             .values
             .map { it.toMutableList() }
         if (buckets.size <= 1) return defs
