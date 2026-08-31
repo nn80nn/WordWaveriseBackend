@@ -9,6 +9,12 @@ import n.startapp.models.dictionary.PronunciationEntry
  */
 const val LEXICAL_SCHEMA_VERSION = 1
 
+/**
+ * Bump when the *pronunciation* binding changes — see [LexicalEntry.pronunciationVersion].
+ * Unlike the schema and prompt versions this is not part of any cache key.
+ */
+const val PRONUNCIATION_VERSION = 1
+
 @Serializable
 enum class LexicalKind { WORD, PHRASE, IDIOM, PHRASAL_VERB, ABBREVIATION, PROPER_NOUN }
 
@@ -64,6 +70,18 @@ data class Sense(
     val antonyms: List<String> = emptyList(),
     /** 1-based indices into [LexicalEntry.sources]. Empty implies [generated]. */
     val sourceRefs: List<Int> = emptyList(),
+    /**
+     * How the word sounds in *this* sense, when that differs from the rest of its part of speech.
+     *
+     * Null is the normal case and means "the same as the group". Set only where a source printed
+     * this definition under a different pronunciation — `lead` the metal against `lead` the
+     * front, both nouns — because a part-of-speech label cannot separate those two.
+     *
+     * ⚠️ Filled server-side from the scraped block the definition came from. The model is never
+     * asked for it: the JSON schema has no field for IPA at all, precisely so it cannot invent one.
+     */
+    val phonetic: String? = null,
+    val audioUrl: String? = null,
     /** No source supported this sense; the model added it. Surfaced as an "ИИ" badge. */
     val generated: Boolean = false,
     val usageNote: String? = null
@@ -135,6 +153,16 @@ data class LexicalEntry(
 
     val schemaVersion: Int = LEXICAL_SCHEMA_VERSION,
     val promptVersion: Int = 0,
+    /**
+     * Which generation of the pronunciation binding wrote the fields above.
+     *
+     * Deliberately **not** part of the cache key. Pronunciation comes from the scrapers, not
+     * from the model, so fixing it must not invalidate a single article — that would cost the
+     * whole corpus a rewrite for a field the model never wrote. Instead a read notices the old
+     * number and repairs that one entry in the background, so the corpus mends itself word by
+     * word as it is used. See `LookupService.repairPronunciation`.
+     */
+    val pronunciationVersion: Int = 0,
     val model: String = "",
     val generatedAt: Long = 0L
 ) {

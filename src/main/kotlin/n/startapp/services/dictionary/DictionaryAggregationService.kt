@@ -170,16 +170,37 @@ class DictionaryAggregationService {
         // Scraper data takes priority; API data fills gaps
         val pronunciations = mergePronunciations(scraperPronunciations + apiPronunciations)
 
-        // Per-POS pronunciation map (for homograph support): pos → list of PronunciationEntry
-        // Only scrapers provide pos-tagged pronunciations
-        val perPosPronunciations: Map<String, List<PronunciationEntry>> = scraperResults
-            .flatMap { it.pronunciations }
+        // One variant per headword block of every scraper: how that block sounds, and which
+        // definitions were printed under it. Only scrapers know this — the APIs hand back one
+        // pronunciation for the whole word.
+        val variants = scraperResults.flatMap { enrichment ->
+            enrichment.pronunciations
+                .groupBy { it.entryIndex }
+                .mapNotNull { (block, prons) ->
+                    val merged = mergePronunciations(
+                        prons.map { PronunciationEntry(it.region, it.ipa, it.audioMp3Url) }
+                    )
+                    if (merged.isEmpty()) return@mapNotNull null
+                    PronunciationVariant(
+                        source = enrichment.source,
+                        pos = prons.firstNotNullOfOrNull { it.pos }?.lowercase()?.trim(),
+                        pronunciations = merged,
+                        definitionKeys = enrichment.senses
+                            .filter { it.entryIndex == block }
+                            .map { PronunciationVariant.key(it.definition) }
+                            .filter { it.isNotBlank() }
+                            .toSet()
+                    )
+                }
+        }
+
+        // Per-POS pronunciation map (for homograph support): pos → list of PronunciationEntry.
+        // Blocks stay in page order, so the first dictionary on the page wins a region — which
+        // for Cambridge means the British entry rather than the American respelling of it.
+        val perPosPronunciations: Map<String, List<PronunciationEntry>> = variants
             .filter { it.pos != null }
-            .groupBy { it.pos!!.lowercase().trim() }
-            .mapValues { (_, prons) ->
-                prons.map { p -> PronunciationEntry(region = p.region, ipa = p.ipa, audioMp3Url = p.audioMp3Url) }
-                    .let { mergePronunciations(it) }
-            }
+            .groupBy { it.pos!! }
+            .mapValues { (_, group) -> mergePronunciations(group.flatMap { it.pronunciations }) }
 
         // Legacy fields for backward-compat
         val phonetic = pronunciations.firstOrNull { it.ipa != null }?.ipa
@@ -234,7 +255,8 @@ class DictionaryAggregationService {
                 examples = allExamples
             ),
             sourceDefinitions = groundingDefinitions,
-            perPosPronunciations = perPosPronunciations
+            perPosPronunciations = perPosPronunciations,
+            pronunciationVariants = variants
         )
     }
 

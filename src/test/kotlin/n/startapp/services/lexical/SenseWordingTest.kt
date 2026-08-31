@@ -103,4 +103,75 @@ class SenseWordingTest {
     fun `an unknown sense yields nothing at all`() {
         assertNull(SenseWording.of(lead(), "v9"))
     }
+
+    @Test
+    fun `a sense with its own pronunciation overrules its part of speech`() {
+        // Два существительных под одним написанием: /liːd/ «лидерство» и /led/ «свинец».
+        // Часть речи их не различает — различает только значение, поэтому оно и побеждает.
+        val entry = LexicalEntry(
+            lemma = "lead",
+            phonetic = "/liːd/",
+            audioUrl = "https://audio/entry.mp3",
+            posGroups = listOf(
+                PosGroup(
+                    pos = "noun",
+                    posRu = "существительное",
+                    pronunciations = listOf(
+                        PronunciationEntry(region = "uk", ipa = "/liːd/", audioMp3Url = "https://audio/noun-uk.mp3")
+                    ),
+                    senses = listOf(
+                        Sense(
+                            id = "n1",
+                            definitionEn = "first place in a race",
+                            definitionRu = "лидерство",
+                            translationsRu = listOf("лидерство")
+                        ),
+                        Sense(
+                            id = "n2",
+                            definitionEn = "a soft heavy metal",
+                            definitionRu = "мягкий тяжёлый металл",
+                            translationsRu = listOf("свинец"),
+                            phonetic = "/led/",
+                            audioUrl = "https://audio/metal.mp3"
+                        )
+                    )
+                )
+            )
+        )
+
+        assertEquals("/liːd/", SenseWording.of(entry, "n1")?.phonetic)
+        assertEquals("/led/", SenseWording.of(entry, "n2")?.phonetic)
+        assertEquals("https://audio/metal.mp3", SenseWording.of(entry, "n2")?.audioUrl)
+    }
+
+    @Test
+    fun `a sense that sounds different and has no recording stays silent`() {
+        // Запись части речи здесь была бы записью другого слова: лучше молча, чем вслух неверно.
+        val entry = LexicalEntry(
+            lemma = "bass",
+            phonetic = "/beɪs/",
+            audioUrl = "https://audio/entry.mp3",
+            posGroups = listOf(
+                PosGroup(
+                    pos = "noun",
+                    posRu = "существительное",
+                    pronunciations = listOf(
+                        PronunciationEntry(region = "uk", ipa = "/beɪs/", audioMp3Url = "https://audio/music.mp3")
+                    ),
+                    senses = listOf(
+                        Sense(
+                            id = "n1",
+                            definitionEn = "a fish",
+                            definitionRu = "окунь",
+                            translationsRu = listOf("окунь"),
+                            phonetic = "/bæs/"
+                        )
+                    )
+                )
+            )
+        )
+
+        assertEquals("/bæs/", SenseWording.of(entry, "n1")?.phonetic)
+        assertNull(SenseWording.of(entry, "n1")?.audioUrl)
+    }
 }

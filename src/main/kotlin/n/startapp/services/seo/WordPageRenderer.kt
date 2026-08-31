@@ -10,6 +10,7 @@ import n.startapp.models.lexical.PosGroup
 import n.startapp.models.lexical.Countability
 import n.startapp.models.lexical.Register
 import n.startapp.models.lexical.Sense
+import n.startapp.services.lexical.PronunciationBinding
 import n.startapp.utils.EnvConfig
 import java.net.URLEncoder
 
@@ -73,7 +74,9 @@ object WordPageRenderer {
             append("<main class=\"wrap\">")
             append("<article class=\"card\">")
             append(articleHead(entry, translations))
-            entry.posGroups.forEach { append(posSection(it)) }
+            val headwordAudio = entry.audioUrl?.takeIf { it.isNotBlank() }
+                ?: entry.pronunciations.firstNotNullOfOrNull { it.audioMp3Url?.takeIf(String::isNotBlank) }
+            entry.posGroups.forEach { append(posSection(it, headwordAudio)) }
             append(extras(entry))
             append(sources(entry))
             append("</article>")
@@ -203,7 +206,10 @@ object WordPageRenderer {
         )
         append("<h1>${esc(entry.lemma)}</h1>")
 
-        val prons = (entry.pronunciations + entry.posGroups.flatMap { it.pronunciations })
+        // ⚠️ The headword's own pronunciations only. Pouring every group's in here as well put
+        // "UK /səˈspekt/ · UK /ˈsʌspekt/" on one line with nothing to say which was which —
+        // the part-of-speech sections below carry theirs, where the label is right beside it.
+        val prons = entry.pronunciations
             .filter { !it.ipa.isNullOrBlank() }
             .distinctBy { it.region to it.ipa }
         if (prons.isNotEmpty()) {
@@ -232,12 +238,25 @@ object WordPageRenderer {
         }
     }
 
-    private fun posSection(group: PosGroup): String = buildString {
+    /**
+     * @param headwordAudio what the page already plays at the top; a section that sounds the
+     *   same does not repeat it, so the extra player appears exactly where it means something.
+     */
+    private fun posSection(group: PosGroup, headwordAudio: String?): String = buildString {
         append("<section class=\"pos\">")
         append(
             "<h2>${esc(group.posRu.ifBlank { group.pos })}" +
                 "<span class=\"tag\">${esc(group.pos)}</span></h2>"
         )
+
+        // Homographs are the reason this is here: `suspect` is /səˈspekt/ as a verb and
+        // /ˈsʌspekt/ as a noun, and one transcription at the top of the page is a claim about
+        // only one of them.
+        val sound = PronunciationBinding.preferred(group.pronunciations)
+        sound?.ipa?.takeIf { it.isNotBlank() }
+            ?.let { append("<p class=\"ipa\">${esc(it)}</p>") }
+        sound?.audioMp3Url?.takeIf { it.isNotBlank() && it != headwordAudio }
+            ?.let { append("<audio class=\"audio\" controls preload=\"none\" src=\"${esc(it)}\"></audio>") }
 
         group.forms?.let { f ->
             val parts = listOfNotNull(
@@ -272,6 +291,10 @@ object WordPageRenderer {
                 ?.let { append("<span class=\"tag\">${esc(it)}</span>") }
             // Honest labelling: a sense no source supported is the model's, and says so.
             if (sense.generated) append("<span class=\"tag ai\">ИИ</span>")
+            // Only when this sense sounds unlike the rest of its part of speech — `lead` the
+            // metal against `lead` the front. Both are nouns, so no label above can say it.
+            sense.phonetic?.takeIf { it.isNotBlank() }
+                ?.let { append("<span class=\"tag\">${esc(it)}</span>") }
         }
         if (badges.isNotEmpty()) append("<p class=\"badges\">$badges</p>")
 

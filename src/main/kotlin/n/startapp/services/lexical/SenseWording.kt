@@ -58,21 +58,24 @@ object SenseWording {
      * UK first only to be deterministic — a card shows one pronunciation, and picking a
      * different one on each refresh would make the card look like it kept changing.
      */
-    private fun pronunciationFor(entry: LexicalEntry, group: PosGroup?): PronunciationEntry? {
-        val ordered = listOf("uk", "us")
-        fun pick(list: List<PronunciationEntry>): PronunciationEntry? =
-            ordered.firstNotNullOfOrNull { region ->
-                list.firstOrNull { it.region.equals(region, ignoreCase = true) && !it.ipa.isNullOrBlank() }
-            } ?: list.firstOrNull { !it.ipa.isNullOrBlank() }
-                ?: list.firstOrNull { !it.audioMp3Url.isNullOrBlank() }
+    private fun pronunciationFor(entry: LexicalEntry, group: PosGroup?): PronunciationEntry? =
+        PronunciationBinding.preferred(group?.pronunciations.orEmpty())
+            ?: PronunciationBinding.preferred(entry.pronunciations)
 
-        return pick(group?.pronunciations.orEmpty()) ?: pick(entry.pronunciations)
-    }
-
+    /**
+     * ⚠️ A sense that carries its own pronunciation is taken **whole**, audio included, and the
+     * group is not allowed to fill the gap: `lead` the metal with the /liːd/ recording attached
+     * is a card that teaches the wrong word out loud. Silence is the lesser mistake.
+     */
     fun of(entry: LexicalEntry, senseId: String?): Wording? =
         senseOf(entry, senseId)?.let { sense ->
             val group = groupOf(entry, senseId)
-            val pronunciation = pronunciationFor(entry, group)
+            val ownIpa = sense.phonetic?.takeIf { it.isNotBlank() }
+            val pronunciation = if (ownIpa != null) {
+                PronunciationEntry(region = null, ipa = ownIpa, audioMp3Url = sense.audioUrl)
+            } else {
+                pronunciationFor(entry, group)
+            }
             Wording(
                 senseId = sense.id,
                 translation = sense.translationsRu.joinToString(", ").trim(),
@@ -85,7 +88,7 @@ object SenseWording {
                 phonetic = pronunciation?.ipa?.takeIf { it.isNotBlank() }
                     ?: entry.phonetic?.takeIf { it.isNotBlank() },
                 audioUrl = pronunciation?.audioMp3Url?.takeIf { it.isNotBlank() }
-                    ?: entry.audioUrl?.takeIf { it.isNotBlank() }
+                    ?: entry.audioUrl?.takeIf { it.isNotBlank() && ownIpa == null }
             )
         }
 }

@@ -67,6 +67,48 @@ class LexicalEntryRepository {
     }
 
     /**
+     * Rewrites the stored articles for one lemma in place, without touching the model.
+     *
+     * ⚠️ By lemma, so it reaches **every** version of the article — including the one an older
+     * prompt wrote, which is still served to readers while a new one is being generated. A
+     * repair that only fixed the current row would leave the copy people actually see wrong.
+     *
+     * `updatedAt` is deliberately left alone: this is not a new article, and moving the
+     * timestamp would tell the warm-up that a stale entry had just been rewritten.
+     */
+    suspend fun rewriteByLemma(lemma: String, transform: (StoredEntry) -> StoredEntry?): Int = dbQuery {
+        val rows = LexicalEntries.selectAll().where { LexicalEntries.lemma eq lemma }.toList()
+        var changed = 0
+        for (row in rows) {
+            val key = row[LexicalEntries.cacheKey]
+            val stored = runCatching {
+                StoredEntry(
+                    entry = json.decodeFromString<LexicalEntry>(row[LexicalEntries.entryJson]),
+                    raw = row[LexicalEntries.rawJson].takeIf { it.isNotBlank() }
+                        ?.let { runCatching { json.decodeFromString<WordDetailResponse>(it) }.getOrNull() },
+                    sourceFingerprint = row[LexicalEntries.sourceFingerprint]
+                )
+            }.getOrElse {
+                logger.warn("Unreadable lexical entry '$key' during rewrite: ${it.message}")
+                null
+            } ?: continue
+
+            val updated = transform(stored) ?: continue
+            if (updated.entry == stored.entry && updated.raw == stored.raw) continue
+
+            val entryJson = json.encodeToString(updated.entry)
+            val rawJson = updated.raw?.let { json.encodeToString(it) }
+            LexicalEntries.update({ LexicalEntries.cacheKey eq key }) {
+                it[LexicalEntries.entryJson] = entryJson
+                if (rawJson != null) it[LexicalEntries.rawJson] = rawJson
+                it[formsIndex] = updated.entry.formsIndex()
+            }
+            changed++
+        }
+        changed
+    }
+
+    /**
      * Persists an annotated entry. Never persists a degraded one — that would pin a failed
      * annotation forever, when the whole point is that the next request retries the model.
      */

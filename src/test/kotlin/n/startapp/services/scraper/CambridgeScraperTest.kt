@@ -64,6 +64,57 @@ class CambridgeScraperTest {
         </body></html>
     """.trimIndent()
 
+    /**
+     * Two homograph blocks in the shape the live site actually serves: the pronunciation and the
+     * part of speech hang off `div.pos-header.dpos-h`, which is what replaced the old
+     * `div.di-info`. Written out in full because the failure it guards against is silent — the
+     * parser kept returning *a* pronunciation, just the same one for every part of speech.
+     */
+    private val suspectHtml = """
+        <html><body>
+        <div class="pr dictionary" data-id="cald4">
+          <div class="pr entry-body__el">
+            <div class="pos-header dpos-h">
+              <div class="di-title"><span class="hw dhw">suspect</span></div>
+              <div class="posgram dpos-g hdib lmr-5"><span class="pos dpos">verb</span></div>
+              <span class="uk dpron-i ">
+                <span class="region dreg">uk</span>
+                <span class="daud"><audio><source type="audio/mpeg" src="/media/english/uk_pron/suspect_verb.mp3"/></audio></span>
+                <span class="pron dpron">/<span class="ipa dipa lpr-2 lpl-1">səˈspekt</span>/</span>
+              </span>
+            </div>
+            <div class="pos-body">
+              <div class="dsense">
+                <div class="def-block ddef_block">
+                  <div class="def ddef_d db">to think that someone has committed a crime</div>
+                  <span class="eg deg">the police suspect him of murder</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="pr entry-body__el">
+            <div class="pos-header dpos-h">
+              <div class="di-title"><span class="hw dhw">suspect</span></div>
+              <div class="posgram dpos-g hdib lmr-5"><span class="pos dpos">noun</span></div>
+              <span class="uk dpron-i ">
+                <span class="region dreg">uk</span>
+                <span class="daud"><audio><source type="audio/mpeg" src="/media/english/uk_pron/suspect_noun.mp3"/></audio></span>
+                <span class="pron dpron">/<span class="ipa dipa lpr-2 lpl-1">ˈsʌs.pekt</span>/</span>
+              </span>
+            </div>
+            <div class="pos-body">
+              <div class="dsense">
+                <div class="def-block ddef_block">
+                  <div class="def ddef_d db">a person believed to have committed a crime</div>
+                  <span class="eg deg">police have arrested a suspect</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        </body></html>
+    """.trimIndent()
+
     private val noContentHtml = "<html><body><p>No results found</p></body></html>"
 
     private val scraper = CambridgeScraper(HttpClient(CIO) {
@@ -142,6 +193,29 @@ class CambridgeScraperTest {
     }
 
     // ── Live integration tests ─────────────────────────────────────────────────
+
+    // ── Homographs ─────────────────────────────────────────────────────────────
+
+    @Test
+    fun `parseHtml keeps one pronunciation per homograph block`() {
+        val result = scraper.parseHtml("suspect", "https://test", suspectHtml)
+
+        assertNotNull(result)
+        assertEquals(2, result.pronunciations.size)
+        assertEquals("/səˈspekt/", result.pronunciations.first { it.pos == "verb" }.ipa)
+        assertEquals("/ˈsʌs.pekt/", result.pronunciations.first { it.pos == "noun" }.ipa)
+    }
+
+    @Test
+    fun `parseHtml ties a definition to the block it was printed in`() {
+        val result = scraper.parseHtml("suspect", "https://test", suspectHtml)
+
+        assertNotNull(result)
+        val nounBlock = result.pronunciations.first { it.pos == "noun" }.entryIndex
+        val nounSense = result.senses.first { it.definition.startsWith("a person believed") }
+        assertEquals(nounBlock, nounSense.entryIndex)
+        assertTrue(result.senses.first { it.definition.startsWith("to think") }.entryIndex != nounBlock)
+    }
 
     @Ignore("Requires network — run manually with live Cambridge server")
     @Test

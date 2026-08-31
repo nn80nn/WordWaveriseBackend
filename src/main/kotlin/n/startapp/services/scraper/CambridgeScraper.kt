@@ -16,7 +16,7 @@ class CambridgeScraper(private val httpClient: HttpClient) {
 
     companion object {
         const val SOURCE_ID = "CAMBRIDGE"
-        const val PARSER_VERSION = "v2"
+        const val PARSER_VERSION = "v3"
         private const val BASE_URL = "https://dictionary.cambridge.org"
         private const val RATE_LIMIT_MS = 1200L
         private val USER_AGENT =
@@ -85,25 +85,31 @@ class CambridgeScraper(private val httpClient: HttpClient) {
         // Cambridge groups homographs into separate blocks, each with its own POS + pronunciation
         val entryBlocks = doc.select("div.entry-body__el")
         if (entryBlocks.isNotEmpty()) {
-            entryBlocks.forEach { entryEl ->
-                // POS for this homograph entry (from di-info header)
-                val entryPos = entryEl.select("div.di-info span.pos.dpos").firstOrNull()?.text()
-                    ?: entryEl.select("div.di-info .posgram .pos").firstOrNull()?.text()
+            entryBlocks.forEachIndexed { entryIndex, entryEl ->
+                // ⚠️ The header is `div.pos-header.dpos-h`, and `div.di-info` is what it used to
+                // be called. Both are listed because the fallback below is silent: when these
+                // selectors match nothing, the parse still succeeds and still returns a
+                // pronunciation — the first one on the page, untagged — so every part of speech
+                // of `suspect` came back as the verb's /səˈspekt/ and nothing looked broken.
+                val header = entryEl.select("div.pos-header.dpos-h, div.di-info").firstOrNull()
+                    ?: entryEl
+                val entryPos = header.select(".posgram .pos.dpos").firstOrNull()?.text()
+                    ?: header.select("span.pos.dpos").firstOrNull()?.text()
 
-                // Per-entry pronunciations (tagged with POS for homograph disambiguation)
-                entryEl.select("div.di-info span.uk.dpron-i").firstOrNull()?.let { el ->
+                // Per-entry pronunciations (tagged with POS + block for homograph disambiguation)
+                header.select("span.uk.dpron-i").firstOrNull()?.let { el ->
                     val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
                     val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
                         ?.attr("src")?.prefixBase()
                     if (ipa != null || mp3 != null)
-                        pronunciations += ScrapedPronunciation("uk", ipa, mp3, pos = entryPos)
+                        pronunciations += ScrapedPronunciation("uk", ipa, mp3, entryPos, entryIndex)
                 }
-                entryEl.select("div.di-info span.us.dpron-i").firstOrNull()?.let { el ->
+                header.select("span.us.dpron-i").firstOrNull()?.let { el ->
                     val ipa = el.select("span.ipa.dipa").firstOrNull()?.text()?.let { "/$it/" }
                     val mp3 = el.select("audio source[type=audio/mpeg]").firstOrNull()
                         ?.attr("src")?.prefixBase()
                     if (ipa != null || mp3 != null)
-                        pronunciations += ScrapedPronunciation("us", ipa, mp3, pos = entryPos)
+                        pronunciations += ScrapedPronunciation("us", ipa, mp3, entryPos, entryIndex)
                 }
 
                 // Parse senses within this entry
@@ -120,7 +126,8 @@ class CambridgeScraper(private val httpClient: HttpClient) {
                             pos = pos, guideWord = guideWord,
                             level = defBlock.select("span.epp-xref").firstOrNull()?.text(),
                             grammar = defBlock.select("span.gram.dgram").firstOrNull()?.text(),
-                            definition = definition, examples = examples
+                            definition = definition, examples = examples,
+                            entryIndex = entryIndex
                         )
                     }
                 }

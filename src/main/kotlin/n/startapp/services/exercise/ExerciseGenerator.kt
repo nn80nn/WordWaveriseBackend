@@ -485,9 +485,20 @@ object ExerciseGenerator {
     private fun posOf(word: PracticeWord): String? =
         groupOf(word)?.pos?.trim()?.lowercase()
 
-    /** The recording, wherever the article happens to keep it. */
+    /**
+     * The recording for *this* sense, then its part of speech, then the word.
+     *
+     * ⚠️ Order matters more here than anywhere else in the article. A listening question is
+     * nothing but the recording, so playing the headword's — the verb /səˈspekt/ while the
+     * learner is being asked about the noun /ˈsʌspekt/ — does not merely lose a nuance, it
+     * marks the right answer wrong for a reason the learner cannot see.
+     */
     private fun audioOf(word: PracticeWord): String? {
         val entry = word.entry ?: return null
+        primarySense(word)?.audioUrl?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        groupOf(word)?.pronunciations
+            ?.firstNotNullOfOrNull { it.audioMp3Url?.takeIf { url -> url.isNotBlank() } }
+            ?.let { return it }
         entry.audioUrl?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
         entry.pronunciations.firstNotNullOfOrNull { it.audioMp3Url?.takeIf { url -> url.isNotBlank() } }
             ?.let { return it }

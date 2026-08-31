@@ -90,5 +90,15 @@ fun Route.lookupRoutes(
                 ?: throw BadRequestException("Query parameter 'lemma' is required")
             call.respond(ApiResponse.success(mapOf("removed" to lookupService.invalidate(lemma))))
         }
+
+        // Re-reads the dictionaries and puts the pronunciation back on a stored article, with
+        // no model call and no rewrite of the text. This is the cheap half of `invalidate`: use
+        // it when what is wrong is the IPA or the audio, not the article.
+        post("/repronounce") {
+            if (call.rejectedAsNonAdmin()) return@post
+            val lemma = call.request.queryParameters["lemma"]
+                ?: throw BadRequestException("Query parameter 'lemma' is required")
+            call.respond(ApiResponse.success(mapOf("rewritten" to lookupService.repronounce(lemma))))
+        }
     }
 }

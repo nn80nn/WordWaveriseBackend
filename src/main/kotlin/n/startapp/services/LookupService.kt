@@ -7,11 +7,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import n.startapp.exceptions.BadRequestException
 import n.startapp.exceptions.NotFoundException
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.lexical.LexicalKind
+import n.startapp.models.lexical.PRONUNCIATION_VERSION
 import n.startapp.models.lookup.AnnotationStatus
 import n.startapp.models.lookup.LookupNotice
 import n.startapp.models.lookup.LookupResponse
@@ -25,6 +27,7 @@ import n.startapp.services.dictionary.SpellingGloss
 import n.startapp.services.lexical.LexicalAnnotationService
 import n.startapp.services.lexical.LexicalEntryFallback
 import n.startapp.services.lexical.LexicalPromptBuilder
+import n.startapp.services.lexical.PronunciationBinding
 import n.startapp.services.query.QueryResolver
 import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
@@ -259,6 +262,9 @@ class LookupService(
 
         repository.find(cacheKey)?.let { stored ->
             hot.put(cacheKey, stored)
+            // The article is current; its pronunciation may not be. Fixed in the background so
+            // this reader still gets an answer now — see [repronounce].
+            if (stored.entry.pronunciationVersion < PRONUNCIATION_VERSION) scheduleRepronounce(lemma)
             return LookupResponse(
                 resolution = resolution,
                 notice = notice,
@@ -615,6 +621,71 @@ class LookupService(
             usage = result.usage
         )
         return WarmOutcome.WRITTEN
+    }
+
+    /**
+     * Lemmas whose sources currently have no pronunciation at all.
+     *
+     * Without this a phrase — which no scraper has an IPA for — would re-run the scrapers on
+     * every single read, forever, chasing a field that is never going to arrive. Short-lived
+     * because "no data" can also mean "the scraper was down when we asked".
+     */
+    private val unpronounceable = Caffeine.newBuilder()
+        .expireAfterWrite(24, TimeUnit.HOURS)
+        .maximumSize(5_000)
+        .build<String, Boolean>()
+
+    private val repairing = ConcurrentHashMap.newKeySet<String>()
+
+    private fun scheduleRepronounce(lemma: String) {
+        if (unpronounceable.getIfPresent(lemma) == true) return
+        if (!repairing.add(lemma)) return
+        scope.launch {
+            try {
+                repronounce(lemma)
+            } catch (e: Exception) {
+                logger.warn("Pronunciation repair failed for '{}': {}", lemma, e.message)
+            } finally {
+                repairing.remove(lemma)
+            }
+        }
+    }
+
+    /**
+     * Re-binds pronunciation on the stored article(s) for a lemma. No model call.
+     *
+     * The scrapers, not the model, are where IPA and audio come from, so a bug in *reading* them
+     * — Cambridge moved the header the pronunciation hangs off, and every part of speech of
+     * `suspect` came back sounding like the verb — leaves the article itself perfectly good.
+     * Rewriting it through the model would be paying for the corpus twice to fix a field the
+     * model never wrote.
+     *
+     * @return how many stored rows changed.
+     */
+    suspend fun repronounce(lemma: String): Int {
+        val normalized = lemma.trim().lowercase()
+        val aggregate = aggregationService.aggregateDetailed(normalized, skipScrapers = false)
+
+        // Nothing to bind. Do not stamp the entry as repaired: a scraper that was down would
+        // otherwise silence the word permanently.
+        if (aggregate.pronunciationVariants.isEmpty() && aggregate.response.pronunciations.isEmpty()) {
+            unpronounceable.put(normalized, true)
+            logger.info("No pronunciation available for '{}' — leaving the stored article alone", normalized)
+            return 0
+        }
+
+        val changed = repository.rewriteByLemma(normalized) { stored ->
+            stored.copy(
+                entry = PronunciationBinding.bind(stored.entry, aggregate),
+                raw = aggregate.response
+            )
+        }
+        if (changed > 0) {
+            hot.asMap().keys.filter { it.contains("|$normalized|") }.forEach { hot.invalidate(it) }
+            superseded.asMap().keys.filter { it.contains("|$normalized|") }.forEach { superseded.invalidate(it) }
+            logger.info("Re-bound pronunciation on {} article(s) for '{}'", changed, normalized)
+        }
+        return changed
     }
 
     /** Drops every cached article for a lemma so the next lookup regenerates it. */

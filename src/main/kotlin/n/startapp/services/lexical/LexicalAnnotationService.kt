@@ -307,23 +307,15 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             logger.info("Annotation for '{}' repaired: {}", lemma, validation.issues.joinToString("; ").take(400))
         }
 
-        val raw = aggregate.response
         // Assembled here rather than taken from the model: pronunciation, audio and provenance
         // come from the scrapers, and the model's output object has no field for them at all.
+        // Pronunciation goes on afterwards, in one place shared with the repair path — see
+        // [PronunciationBinding].
         val entry = LexicalEntry(
             lemma = lemma,
             queryForm = queryForm,
             kind = kind,
-            pronunciations = raw.pronunciations,
-            phonetic = raw.phonetic,
-            audioUrl = raw.audioUrl,
-            posGroups = validation.posGroups.map { group ->
-                group.copy(
-                    pronunciations = aggregate.perPosPronunciations[group.pos]
-                        ?.takeIf { it.isNotEmpty() }
-                        ?: raw.pronunciations
-                )
-            },
+            posGroups = validation.posGroups,
             etymology = draft.etymology?.trim()?.takeIf { it.isNotBlank() },
             usageNotes = draft.usageNotes.map { it.trim() }.filter { it.isNotBlank() },
             frequencyBand = draft.frequencyBand?.trim()?.takeIf { it.isNotBlank() },
@@ -334,6 +326,6 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             model = EnvConfig.aiModel,
             generatedAt = System.currentTimeMillis()
         )
-        return AttemptResult.Success(entry, result.usage)
+        return AttemptResult.Success(PronunciationBinding.bind(entry, aggregate), result.usage)
     }
 }
