@@ -16,7 +16,11 @@ class CambridgeScraper(private val httpClient: HttpClient) {
 
     companion object {
         const val SOURCE_ID = "CAMBRIDGE"
-        const val PARSER_VERSION = "v3"
+        const val PARSER_VERSION = "v4"
+
+        /** Per homograph block, so one part of speech cannot spend the whole budget. */
+        private const val MAX_SENSES_PER_BLOCK = 5
+        private const val MAX_SENSES_TOTAL = 24
         private const val BASE_URL = "https://dictionary.cambridge.org"
         private const val RATE_LIMIT_MS = 1200L
         private val USER_AGENT =
@@ -54,6 +58,24 @@ class CambridgeScraper(private val httpClient: HttpClient) {
             logger.warn("Cambridge scrape failed for '$word' after ${elapsed}ms: ${e.message}")
             null
         }
+    }
+
+    /**
+     * A budget per headword block, not one shared by the whole page.
+     *
+     * ⚠️ A flat `take(10)` let the first block eat the entire quota. Cambridge lists `lead` the
+     * verb before `lead` the noun and gives the verb more than ten senses, so the noun — the
+     * metal, the pencil, the dog's lead, and the only block pronounced /led/ — never reached
+     * the aggregate at all. What looks like a truncation limit is really a decision about which
+     * meanings of a homograph exist.
+     */
+    private fun capPerBlock(senses: List<ScrapedSense>): List<ScrapedSense> {
+        val perBlock = mutableMapOf<Int, Int>()
+        return senses.filter { sense ->
+            val taken = perBlock.getOrDefault(sense.entryIndex, 0)
+            if (taken >= MAX_SENSES_PER_BLOCK) false
+            else { perBlock[sense.entryIndex] = taken + 1; true }
+        }.take(MAX_SENSES_TOTAL)
     }
 
     // ── Rate-limited HTTP fetch ──────────────────────────────────────────────
@@ -190,7 +212,7 @@ class CambridgeScraper(private val httpClient: HttpClient) {
             fetchedAt = System.currentTimeMillis(),
             url = url,
             pronunciations = pronunciations,
-            senses = senses.take(10),
+            senses = capPerBlock(senses),
             examples = allExamples.distinct().take(10),
             meta = mapOf("parserVersion" to PARSER_VERSION)
         )

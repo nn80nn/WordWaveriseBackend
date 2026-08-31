@@ -344,20 +344,7 @@ class DictionaryAggregationService {
     private fun deduplicateDefinitions(
         defs: List<DetailedDefinition>,
         perSourceLimit: Int = 8
-    ): List<DetailedDefinition> {
-        val seenPerSource = mutableMapOf<String, MutableSet<String>>()
-        val countPerSource = mutableMapOf<String, Int>()
-        return defs.filter { def ->
-            val source = def.source?.uppercase() ?: "UNKNOWN"
-            val key = def.definition.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().take(60)
-            val seenKeys = seenPerSource.getOrPut(source) { mutableSetOf() }
-            val count = countPerSource.getOrDefault(source, 0)
-            if (count >= perSourceLimit) return@filter false
-            if (!seenKeys.add(key)) return@filter false
-            countPerSource[source] = count + 1
-            true
-        }
-    }
+    ): List<DetailedDefinition> = DefinitionBudget.apply(defs, perSourceLimit)
 
     /**
      * Remove duplicate examples (exact lowercase match).

@@ -217,6 +217,33 @@ class CambridgeScraperTest {
         assertTrue(result.senses.first { it.definition.startsWith("to think") }.entryIndex != nounBlock)
     }
 
+    @Test
+    fun `one homograph block cannot spend the whole sense budget`() {
+        // Cambridge печатает `lead`-глагол раньше `lead`-существительного и даёт ему больше
+        // десяти значений. Общий `take(10)` отдавал глаголу всё, и металл — единственный блок
+        // с /led/ — не доезжал до статьи вовсе.
+        fun block(index: Int, pos: String): String {
+            val senses = (1..8).joinToString("") { i ->
+                "<div class=\"dsense\"><div class=\"def-block ddef_block\">" +
+                    "<div class=\"def ddef_d db\">block $index sense $i</div></div></div>"
+            }
+            return "<div class=\"pr entry-body__el\">" +
+                "<div class=\"pos-header dpos-h\">" +
+                "<div class=\"posgram dpos-g\"><span class=\"pos dpos\">$pos</span></div>" +
+                "<span class=\"uk dpron-i \"><span class=\"pron dpron\">/" +
+                "<span class=\"ipa dipa\">x$index</span>/</span></span></div>" +
+                "<div class=\"pos-body\">$senses</div></div>"
+        }
+        val html = "<html><body><div class=\"pr dictionary\">" +
+            block(0, "verb") + block(1, "noun") + "</div></body></html>"
+
+        val result = scraper.parseHtml("lead", "https://test", html)
+
+        assertNotNull(result)
+        assertEquals(5, result.senses.count { it.entryIndex == 0 })
+        assertEquals(5, result.senses.count { it.entryIndex == 1 })
+    }
+
     @Ignore("Requires network — run manually with live Cambridge server")
     @Test
     fun `live scrape returns definitions for playground`() {
