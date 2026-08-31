@@ -186,4 +186,20 @@ class SavedWordSenseMigrationTest {
         assertNotNull(transaction { SavedWords.selectAll().where { SavedWords.id eq second }.singleOrNull() })
         Unit
     }
+
+    @Test
+    fun `a row is never pinned on behalf of another account`() = onFreshDatabase {
+        val teacher = user()
+        val student = user()
+        article("resolve", "v1", "v2")
+        val theirs = row(teacher, "resolve")
+
+        // Список ученика показывает и слова учителя — писать в них с чужого экрана нельзя.
+        val wrote = runBlocking {
+            words.pinSense(theirs, student, "v1", null, null, null)
+        }
+
+        assertEquals(false, wrote)
+        assertNull(senseOf(theirs))
+    }
 }

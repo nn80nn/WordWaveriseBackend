@@ -178,15 +178,23 @@ class SavedWordRepository {
      *
      * ⚠️ Refuses to move a row that already carries a sense. That is somebody's decision, and
      * the entire point of the change is that decisions stop being overwritten.
+     *
+     * ⚠️ [userId] is not decoration. The saved list a reader sees includes words reached
+     * through a group, and those rows belong to the teacher — filling one in from a student's
+     * screen would be writing into another account, and with a sense chosen from the wrong
+     * person's vocabulary at that.
      */
     suspend fun pinSense(
         id: Int,
+        userId: Int,
         senseId: String,
         translation: String?,
         definition: String?,
         example: String?
     ): Boolean = dbQuery {
-        SavedWords.update({ (SavedWords.id eq id) and (SavedWords.senseId.isNull()) }) { row ->
+        SavedWords.update({
+            (SavedWords.id eq id) and (SavedWords.userId eq userId) and SavedWords.senseId.isNull()
+        }) { row ->
             row[SavedWords.senseId] = senseId
             translation?.takeIf { it.isNotBlank() }?.let { row[SavedWords.translation] = it.take(500) }
             definition?.takeIf { it.isNotBlank() }?.let { row[SavedWords.definition] = it }

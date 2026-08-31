@@ -63,6 +63,7 @@ object SavedWordSenseMigration {
             val ok = runCatching {
                 saved.pinSense(
                     id = row.id,
+                    userId = row.userId,
                     senseId = senseId,
                     translation = row.translation ?: wording?.translation,
                     definition = row.definition ?: wording?.definition,

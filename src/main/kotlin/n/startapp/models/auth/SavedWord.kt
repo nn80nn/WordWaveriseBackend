@@ -21,7 +21,10 @@ data class SavedWord(
     /** Every folder this entry is filed under; empty means it is filed nowhere. */
     val categoryIds: List<Int> = emptyList(),
     val example: String? = null,
-    /** The sense of the article the user pinned, or null when they saved the word as a whole. */
+    /**
+     * The sense of the article this row is. Null only while the article cannot name one — a
+     * word whose entry is still being written — and filled in by the next read of the list.
+     */
     val senseId: String? = null
 ) {
     /**

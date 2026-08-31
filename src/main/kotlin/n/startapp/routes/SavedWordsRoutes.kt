@@ -252,7 +252,11 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
 
     // Sense ids this user already holds per word, so a fill cannot hand out the same meaning
     // twice. Grown as we go: two unpinned rows of one word get two different senses.
-    val held = groupBy { it.word.trim().lowercase() }
+    //
+    // ⚠️ Own rows only. This list also carries words reached through a group, and those belong
+    // to the teacher — their pins say nothing about what is taken in *this* vocabulary.
+    val held = filter { it.userId == userId }
+        .groupBy { it.word.trim().lowercase() }
         .mapValues { (_, rows) -> rows.mapNotNull { it.senseId }.toMutableSet() }
         .toMutableMap()
 
@@ -260,7 +264,8 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
         val key = saved.word.trim().lowercase()
         val entry = entries[key]
 
-        val pinned = if (!saved.senseId.isNullOrBlank()) saved
+        // A borrowed row is the teacher's to fill in, on their own screen.
+        val pinned = if (!saved.senseId.isNullOrBlank() || saved.userId != userId) saved
         else {
             val chosen = SenseBackfill.choose(entry, held.getOrPut(key) { mutableSetOf() })
                 ?: return@map saved
@@ -268,6 +273,7 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
             val ok = runCatching {
                 repository.pinSense(
                     id = saved.id,
+                    userId = userId,
                     senseId = chosen,
                     translation = saved.translation ?: wording?.translation,
                     definition = saved.definition ?: wording?.definition,
