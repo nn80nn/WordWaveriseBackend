@@ -77,6 +77,14 @@ class ServiceRegistry {
         llmEndpoint = (llmClient as? OpenAiCompatibleLlmClient)?.primary?.endpoint ?: "?"
     )
 
+    /**
+     * Corrects pronunciation across the corpus without the model — see the class doc for why a
+     * lookup-time repair alone leaves `/word/{lemma}` behind. Never auto-starts: it shares the
+     * scraper budget with live lookups, and that is an operator's decision.
+     */
+    val pronunciationSweepService =
+        n.startapp.services.lexical.PronunciationSweepService(lookupService, lexicalEntryRepository)
+
     private val warmupOracle = DataMuseWordOracle(oracleHttpClient)
     val warmupQueueRepository = n.startapp.repositories.WarmupQueueRepository()
     val warmupService =
@@ -92,6 +100,8 @@ class ServiceRegistry {
 
     fun close() {
         logger.info("Shutting down services")
+        runCatching { pronunciationSweepService.close() }
+            .onFailure { logger.warn("pronunciationSweepService.close(): ${it.message}") }
         runCatching { warmupService.close() }.onFailure { logger.warn("warmupService.close(): ${it.message}") }
         runCatching { lookupService.close() }.onFailure { logger.warn("lookupService.close(): ${it.message}") }
         runCatching { aggregationService.close() }.onFailure { logger.warn("aggregationService.close(): ${it.message}") }

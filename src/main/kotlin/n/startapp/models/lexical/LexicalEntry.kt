@@ -13,7 +13,7 @@ const val LEXICAL_SCHEMA_VERSION = 1
  * Bump when the *pronunciation* binding changes — see [LexicalEntry.pronunciationVersion].
  * Unlike the schema and prompt versions this is not part of any cache key.
  */
-const val PRONUNCIATION_VERSION = 1
+const val PRONUNCIATION_VERSION = 2
 
 @Serializable
 enum class LexicalKind { WORD, PHRASE, IDIOM, PHRASAL_VERB, ABBREVIATION, PROPER_NOUN }

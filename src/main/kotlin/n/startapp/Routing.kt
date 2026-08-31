@@ -118,7 +118,12 @@ fun Application.configureRouting(services: ServiceRegistry) {
         seoRoutes(services.lexicalEntryRepository)
 
         // v2 lookup: LLM-annotated article, with the raw aggregate alongside it
-        lookupRoutes(services.lookupService, services.ruEnTranslationService, services.warmupService)
+        lookupRoutes(
+            services.lookupService,
+            services.ruEnTranslationService,
+            services.warmupService,
+            services.pronunciationSweepService
+        )
 
         // Corpus statistics, article browsing and the hand-managed warm-up queue
         adminCorpusRoutes(services.lexicalEntryRepository, services.warmupService, services.warmupQueueRepository)

@@ -8,6 +8,7 @@ import n.startapp.exceptions.BadRequestException
 import n.startapp.models.ApiResponse
 import n.startapp.services.LookupService
 import n.startapp.services.query.RuEnTranslationService
+import n.startapp.services.lexical.PronunciationSweepService
 import n.startapp.services.warmup.WarmupService
 import n.startapp.services.warmup.WarmupStartResponse
 
@@ -18,7 +19,8 @@ import n.startapp.services.warmup.WarmupStartResponse
 fun Route.lookupRoutes(
     lookupService: LookupService,
     ruEnTranslationService: RuEnTranslationService,
-    warmupService: WarmupService
+    warmupService: WarmupService,
+    pronunciationSweepService: PronunciationSweepService
 ) {
     route("/api/v2/words") {
         get("/lookup") {
@@ -99,6 +101,35 @@ fun Route.lookupRoutes(
             val lemma = call.request.queryParameters["lemma"]
                 ?: throw BadRequestException("Query parameter 'lemma' is required")
             call.respond(ApiResponse.success(mapOf("rewritten" to lookupService.repronounce(lemma))))
+        }
+
+        // The same thing across the whole corpus, paced. A lookup repairs what people open;
+        // this is for the pages they arrive at from a search engine, which never trigger it.
+        route("/repronounce-all") {
+            get("/status") {
+                if (call.rejectedAsNonAdmin()) return@get
+                call.respond(ApiResponse.success(pronunciationSweepService.status()))
+            }
+
+            post("/start") {
+                if (call.rejectedAsNonAdmin()) return@post
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 0
+                val perHour = call.request.queryParameters["perHour"]?.toIntOrNull() ?: 0
+                val started = pronunciationSweepService.start(limit, perHour)
+                call.respond(
+                    ApiResponse.success(
+                        mapOf(
+                            "started" to started.toString(),
+                            "message" to if (started) "sweep running" else "already running"
+                        )
+                    )
+                )
+            }
+
+            post("/stop") {
+                if (call.rejectedAsNonAdmin()) return@post
+                call.respond(ApiResponse.success(mapOf("stopped" to pronunciationSweepService.stop())))
+            }
         }
     }
 }

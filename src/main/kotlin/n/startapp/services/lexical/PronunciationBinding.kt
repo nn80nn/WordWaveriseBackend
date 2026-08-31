@@ -28,6 +28,15 @@ import n.startapp.services.dictionary.PronunciationVariant
  */
 object PronunciationBinding {
 
+    /**
+     * Marks that belong to a dictionary's house style rather than to the word: slashes, length
+     * marks, syllable dots, secondary stress.
+     *
+     * ⚠️ Primary stress (ˈ) is deliberately absent. It is the entire difference between
+     * `ˈsʌspekt` and `səˈspekt`, and the reason this file exists.
+     */
+    private const val CONVENTION_MARKS = "/ːˌ.·- "
+
     /** A card shows one pronunciation; UK first only so it is the same one every time. */
     fun preferred(entries: List<PronunciationEntry>): PronunciationEntry? =
         listOf("uk", "us").firstNotNullOfOrNull { region ->
@@ -89,9 +98,27 @@ object PronunciationBinding {
 
         // The group already says this. Repeating it on the sense would put an identical
         // transcription under every line of the article for no reason.
-        if (ipa == groupIpa) return cleared
+        //
+        // ⚠️ Compared as sound, not as text. Cambridge's American section respells /liːd/ as
+        // /lid/ — the same word, a different convention — and a literal comparison read that
+        // as a second pronunciation and printed "/lid/" under the dog's lead, which is not
+        // even a plausible way to say it.
+        if (sameSound(ipa, groupIpa)) return cleared
 
         return cleared.copy(phonetic = ipa, audioUrl = chosen.audioMp3Url?.takeIf { it.isNotBlank() })
+    }
+
+    /**
+     * Do these two transcriptions say the same thing?
+     *
+     * Length marks and syllable separators are conventions of the dictionary that printed them,
+     * not facts about the word. Primary stress is left alone — it is the entire difference
+     * between `ˈsʌspekt` and `səˈspekt`, and the reason any of this exists.
+     */
+    private fun sameSound(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return false
+        fun normalize(value: String) = value.lowercase().filterNot { it in CONVENTION_MARKS }
+        return normalize(a) == normalize(b)
     }
 
     /**

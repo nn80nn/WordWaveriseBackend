@@ -161,4 +161,56 @@ class PronunciationBindingTest {
 
         assertNull(bound.posGroups.single().senses.single().phonetic)
     }
+
+    @Test
+    fun `the same sound written two ways is not a second pronunciation`() {
+        // Американский раздел Cambridge пишет /liːd/ как /lid/. Буквальное сравнение принимало
+        // это за второе произношение и печатало «/lid/» под собачьим поводком — так это слово
+        // не читается ни в одном варианте английского.
+        val leash = "a strap or chain fastened to a dog collar"
+        val entry = LexicalEntry(
+            lemma = "lead",
+            sources = listOf(SourceRef(1, "CAMBRIDGE", "noun", leash)),
+            posGroups = listOf(
+                PosGroup("noun", "существительное", senses = listOf(sense("n1", leash, listOf(1))))
+            )
+        )
+
+        val bound = PronunciationBinding.bind(
+            entry,
+            aggregate(
+                perPos = mapOf("noun" to uk("/liːd/")),
+                variants = listOf(
+                    PronunciationVariant("CAMBRIDGE", "noun", uk("/lid/"), setOf(PronunciationVariant.key(leash)))
+                )
+            )
+        )
+
+        assertNull(bound.posGroups.single().senses.single().phonetic)
+    }
+
+    @Test
+    fun `a difference of stress is still a difference`() {
+        // Та же нормализация не должна съесть ударение: на нём всё и держится.
+        val noun = "a rise in amount"
+        val entry = LexicalEntry(
+            lemma = "increase",
+            sources = listOf(SourceRef(1, "CAMBRIDGE", "noun", noun)),
+            posGroups = listOf(
+                PosGroup("noun", "существительное", senses = listOf(sense("n1", noun, listOf(1))))
+            )
+        )
+
+        val bound = PronunciationBinding.bind(
+            entry,
+            aggregate(
+                perPos = mapOf("noun" to uk("/ɪnˈkriːs/")),
+                variants = listOf(
+                    PronunciationVariant("CAMBRIDGE", "noun", uk("/ˈɪn.kriːs/"), setOf(PronunciationVariant.key(noun)))
+                )
+            )
+        )
+
+        assertEquals("/ˈɪn.kriːs/", bound.posGroups.single().senses.single().phonetic)
+    }
 }
