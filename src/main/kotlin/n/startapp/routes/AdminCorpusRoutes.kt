@@ -53,6 +53,22 @@ fun Route.adminCorpusRoutes(
             )
         }
 
+        // The same pass the server runs at boot, on demand. A word saved before its article
+        // existed is pinned as soon as the article does, and waiting for the next deploy — or
+        // for its owner to open the list — is a long way round for something this cheap.
+        post("/pin-senses") {
+            if (call.rejectedAsNonAdmin()) return@post
+            val outcome = n.startapp.database.SavedWordSenseMigration.run(savedWords, repository)
+            call.respond(
+                ApiResponse.success(
+                    mapOf(
+                        "pinned" to outcome.pinned,
+                        "leftAlone" to outcome.leftAlone
+                    )
+                )
+            )
+        }
+
         // Paged rather than whole: the corpus is the thing that grows without bound here.
         get("/entries") {
             if (call.rejectedAsNonAdmin()) return@get

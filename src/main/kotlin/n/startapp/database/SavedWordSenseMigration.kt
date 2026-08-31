@@ -28,11 +28,14 @@ object SavedWordSenseMigration {
 
     private val logger = LoggerFactory.getLogger(SavedWordSenseMigration::class.java)
 
-    suspend fun run(saved: SavedWordRepository, lexicalEntries: LexicalEntryRepository) {
+    /** What one pass did, for an operator who asked for it by hand. */
+    data class Outcome(val pinned: Int, val leftAlone: Int)
+
+    suspend fun run(saved: SavedWordRepository, lexicalEntries: LexicalEntryRepository): Outcome {
         val rows = runCatching { saved.rowsNeedingSense() }
             .onFailure { logger.warn("Sense migration could not read saved words: ${it.message}") }
             .getOrDefault(emptyList())
-        if (rows.isEmpty()) return
+        if (rows.isEmpty()) return Outcome(0, 0)
 
         val unpinned = rows.filter { it.senseId == null }
         val entries = runCatching { lexicalEntries.findLatestByLemmas(unpinned.map { it.word }.distinct()) }
@@ -82,5 +85,6 @@ object SavedWordSenseMigration {
             "Sense migration: {} saved words pinned, {} left as they are (no article yet)",
             pinned, noArticle
         )
+        return Outcome(pinned = pinned, leftAlone = noArticle)
     }
 }
