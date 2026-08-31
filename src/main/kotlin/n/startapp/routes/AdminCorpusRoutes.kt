@@ -22,7 +22,8 @@ import n.startapp.services.warmup.WarmupService
 fun Route.adminCorpusRoutes(
     repository: LexicalEntryRepository,
     warmupService: WarmupService,
-    queue: WarmupQueueRepository
+    queue: WarmupQueueRepository,
+    savedWords: n.startapp.repositories.SavedWordRepository
 ) {
     route("/api/admin/corpus") {
 
@@ -33,6 +34,23 @@ fun Route.adminCorpusRoutes(
                 queueWords = queue.words()
             )
             call.respond(ApiResponse.success(stats))
+        }
+
+        // Whether every saved word carries a sense — the one number that says the sense
+        // migration did what it says. `withoutSense` settles at the words whose article is
+        // not written yet; it should never climb.
+        get("/saved-senses") {
+            if (call.rejectedAsNonAdmin()) return@get
+            val (total, withSense, withoutSense) = savedWords.senseCoverage()
+            call.respond(
+                ApiResponse.success(
+                    mapOf(
+                        "total" to total,
+                        "withSense" to withSense,
+                        "withoutSense" to withoutSense
+                    )
+                )
+            )
         }
 
         // Paged rather than whole: the corpus is the thing that grows without bound here.

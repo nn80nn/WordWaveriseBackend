@@ -126,7 +126,12 @@ fun Application.configureRouting(services: ServiceRegistry) {
         )
 
         // Corpus statistics, article browsing and the hand-managed warm-up queue
-        adminCorpusRoutes(services.lexicalEntryRepository, services.warmupService, services.warmupQueueRepository)
+        adminCorpusRoutes(
+            services.lexicalEntryRepository,
+            services.warmupService,
+            services.warmupQueueRepository,
+            n.startapp.repositories.SavedWordRepository()
+        )
 
         // Settings editable while the server runs
         adminSettingsRoutes()
