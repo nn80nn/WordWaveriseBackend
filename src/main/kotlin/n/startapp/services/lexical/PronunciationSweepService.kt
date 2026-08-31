@@ -25,6 +25,8 @@ data class PronunciationSweepStatus(
     val rewritten: Int,
     /** Already carried the current binding; skipped without touching a dictionary. */
     val alreadyCurrent: Int,
+    /** Went to the dictionaries and found nothing to change — an idiom, or an unchanged word. */
+    val unchanged: Int,
     val failed: Int,
     val currentWord: String? = null,
     val wordsPerHour: Int,
@@ -62,6 +64,7 @@ class PronunciationSweepService(
     private val processed = AtomicInteger()
     private val rewritten = AtomicInteger()
     private val alreadyCurrent = AtomicInteger()
+    private val unchanged = AtomicInteger()
     private val failed = AtomicInteger()
     private val current = AtomicReference<String?>(null)
     private val startedAt = AtomicReference<Long?>(null)
@@ -74,6 +77,7 @@ class PronunciationSweepService(
         processed = processed.get(),
         rewritten = rewritten.get(),
         alreadyCurrent = alreadyCurrent.get(),
+        unchanged = unchanged.get(),
         failed = failed.get(),
         currentWord = current.get(),
         wordsPerHour = pace.get(),
@@ -85,7 +89,7 @@ class PronunciationSweepService(
     fun start(limit: Int = 0, wordsPerHour: Int = 0): Boolean {
         if (job.get()?.isActive == true) return false
         pace.set(if (wordsPerHour > 0) wordsPerHour else DEFAULT_WORDS_PER_HOUR)
-        processed.set(0); rewritten.set(0); alreadyCurrent.set(0); failed.set(0)
+        processed.set(0); rewritten.set(0); alreadyCurrent.set(0); unchanged.set(0); failed.set(0)
         lastError.set(null)
         startedAt.set(System.currentTimeMillis())
         job.set(scope.launch { run(limit) })
@@ -122,7 +126,7 @@ class PronunciationSweepService(
             }
 
             runCatching { lookupService.repronounce(lemma) }
-                .onSuccess { if (it > 0) rewritten.incrementAndGet() }
+                .onSuccess { if (it > 0) rewritten.incrementAndGet() else unchanged.incrementAndGet() }
                 .onFailure {
                     failed.incrementAndGet()
                     lastError.set("$lemma: ${it.message}")
@@ -135,8 +139,8 @@ class PronunciationSweepService(
 
         current.set(null)
         logger.info(
-            "Pronunciation sweep finished: {} processed, {} rewritten, {} already current, {} failed",
-            processed.get(), rewritten.get(), alreadyCurrent.get(), failed.get()
+            "Pronunciation sweep finished: {} processed, {} rewritten, {} unchanged, {} already current, {} failed",
+            processed.get(), rewritten.get(), unchanged.get(), alreadyCurrent.get(), failed.get()
         )
     }
 

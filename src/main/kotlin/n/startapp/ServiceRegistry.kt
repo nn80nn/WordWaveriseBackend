@@ -17,6 +17,7 @@ import n.startapp.services.query.DataMuseWordOracle
 import n.startapp.services.query.QueryResolver
 import n.startapp.services.query.RuEnTranslationService
 import n.startapp.services.warmup.WarmupService
+import kotlinx.coroutines.launch
 import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
 
@@ -91,6 +92,18 @@ class ServiceRegistry {
         WarmupService(lookupService, warmupOracle, warmupQueueRepository, lexicalEntryRepository)
 
     init {
+        // Every saved word gets an explicit sense. Off the startup path — it reads the corpus
+        // for every unpinned word — but before anyone is served, in practice, because the pass
+        // is short and the rows it looks at are the ones nobody has opened yet today.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching {
+                n.startapp.database.SavedWordSenseMigration.run(
+                    n.startapp.repositories.SavedWordRepository(),
+                    lexicalEntryRepository
+                )
+            }.onFailure { logger.warn("Sense migration failed: ${it.message}") }
+        }
+
         if (EnvConfig.warmupEnabled) {
             // Resumes on its own after a restart: anything already annotated is skipped.
             val started = warmupService.start(EnvConfig.warmupLimit)

@@ -22,6 +22,7 @@ import n.startapp.repositories.SavedWordRepository
 import n.startapp.services.SavedWordEnrichment
 import n.startapp.services.group.FolderAccessResolver
 import n.startapp.services.group.FolderCatalog
+import n.startapp.services.lexical.SenseBackfill
 import n.startapp.services.lexical.SenseWording
 import org.slf4j.LoggerFactory
 
@@ -175,14 +176,20 @@ private suspend fun SavedWordRepository.saveFrom(
     if (request.word.isBlank()) throw BadRequestException("Word cannot be empty")
 
     val word = request.word.trim().lowercase()
-    val pinned = request.senseId?.trim()?.takeIf { it.isNotEmpty() }
+    val entry = runCatching { lexicalEntries.findLatestByLemma(word) }
+        .onFailure { savedWordLogger.warn("Could not read the corpus while saving $word: ${it.message}") }
+        .getOrNull()
 
-    val wording = pinned?.let { senseId ->
-        runCatching { lexicalEntries.findLatestByLemma(word) }
-            .onFailure { savedWordLogger.warn("Could not read the corpus while pinning $word: ${it.message}") }
-            .getOrNull()
-            ?.let { SenseWording.of(it, senseId) }
-    }
+    // ⚠️ A save that names no sense is given the first one rather than left blank. A row with
+    // no sense was the weaker of the two ways to save: it recorded no choice, so the *next*
+    // save of that word could fill one in — making a decision on the user's behalf that they
+    // never took. The clients no longer offer it; an older app still does, and this is where
+    // that request stops producing such a row. The first sense is what the row displayed
+    // anyway, so nothing on screen moves.
+    val pinned = request.senseId?.trim()?.takeIf { it.isNotEmpty() }
+        ?: SenseBackfill.choose(entry)
+
+    val wording = pinned?.let { senseId -> entry?.let { SenseWording.of(it, senseId) } }
 
     val saved = save(
         userId = userId,
@@ -225,8 +232,13 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
     repository: SavedWordRepository,
     userId: Int
 ): List<SavedWord> {
+    // A row with no sense is a gap too, and the most consequential kind: until it has one, the
+    // next save of that word can still decide for the user which meaning they meant. The
+    // startup migration takes the bulk; this catches whatever arrives after it — a word whose
+    // article was not written yet, or a save from an app that has not been updated.
     val gaps = filter {
-        it.definition.isNullOrBlank() || it.translation.isNullOrBlank() || it.example.isNullOrBlank()
+        it.senseId.isNullOrBlank() ||
+            it.definition.isNullOrBlank() || it.translation.isNullOrBlank() || it.example.isNullOrBlank()
     }
     if (gaps.isEmpty()) return this
 
@@ -238,17 +250,45 @@ private suspend fun List<SavedWord>.withCorpusGapsFilled(
         return this
     }
 
+    // Sense ids this user already holds per word, so a fill cannot hand out the same meaning
+    // twice. Grown as we go: two unpinned rows of one word get two different senses.
+    val held = groupBy { it.word.trim().lowercase() }
+        .mapValues { (_, rows) -> rows.mapNotNull { it.senseId }.toMutableSet() }
+        .toMutableMap()
+
     return map { saved ->
-        val filled = SavedWordEnrichment.fill(saved, entries[saved.word.trim().lowercase()])
-            ?: return@map saved
+        val key = saved.word.trim().lowercase()
+        val entry = entries[key]
+
+        val pinned = if (!saved.senseId.isNullOrBlank()) saved
+        else {
+            val chosen = SenseBackfill.choose(entry, held.getOrPut(key) { mutableSetOf() })
+                ?: return@map saved
+            val wording = entry?.let { SenseWording.of(it, chosen) }
+            val ok = runCatching {
+                repository.pinSense(
+                    id = saved.id,
+                    senseId = chosen,
+                    translation = saved.translation ?: wording?.translation,
+                    definition = saved.definition ?: wording?.definition,
+                    example = saved.example ?: wording?.example
+                )
+            }.onFailure { savedWordLogger.warn("Could not pin saved word ${saved.id}: ${it.message}") }
+                .getOrDefault(false)
+            if (!ok) return@map saved
+            held.getOrPut(key) { mutableSetOf() } += chosen
+            saved.copy(senseId = chosen)
+        }
+
+        val filled = SavedWordEnrichment.fill(pinned, entry) ?: return@map pinned
 
         runCatching {
-            repository.updateContent(saved.id, userId, filled.translation, filled.definition, filled.example)
-        }.onFailure { savedWordLogger.warn("Could not fill saved word ${saved.id}: ${it.message}") }
-        saved.copy(
+            repository.updateContent(pinned.id, userId, filled.translation, filled.definition, filled.example)
+        }.onFailure { savedWordLogger.warn("Could not fill saved word ${pinned.id}: ${it.message}") }
+        pinned.copy(
             definition = filled.definition,
             translation = filled.translation,
-            example = filled.example ?: saved.example
+            example = filled.example ?: pinned.example
         )
     }
 }

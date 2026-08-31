@@ -170,6 +170,70 @@ class SavedWordRepository {
     }
 
     /**
+     * Pins a row to a sense, filling in wording that is still blank.
+     *
+     * ⚠️ Only ever fills. The row may predate senses entirely, and whatever the user has been
+     * reading on it is the one thing this migration must not change — the pin makes the choice
+     * explicit, it does not restate the word.
+     *
+     * ⚠️ Refuses to move a row that already carries a sense. That is somebody's decision, and
+     * the entire point of the change is that decisions stop being overwritten.
+     */
+    suspend fun pinSense(
+        id: Int,
+        senseId: String,
+        translation: String?,
+        definition: String?,
+        example: String?
+    ): Boolean = dbQuery {
+        SavedWords.update({ (SavedWords.id eq id) and (SavedWords.senseId.isNull()) }) { row ->
+            row[SavedWords.senseId] = senseId
+            translation?.takeIf { it.isNotBlank() }?.let { row[SavedWords.translation] = it.take(500) }
+            definition?.takeIf { it.isNotBlank() }?.let { row[SavedWords.definition] = it }
+            example?.takeIf { it.isNotBlank() }?.let { row[SavedWords.example] = it }
+        } > 0
+    }
+
+    /** One saved row, thinly — what the sense migration needs to decide and nothing more. */
+    data class SenseRow(
+        val id: Int,
+        val userId: Int,
+        val word: String,
+        val senseId: String?,
+        val translation: String?,
+        val definition: String?,
+        val example: String?
+    )
+
+    /**
+     * Rows with no sense, plus every sibling row of the same (user, word).
+     *
+     * The siblings are not optional: choosing a sense without knowing which ones the user
+     * already holds is how you hand somebody the same meaning twice.
+     */
+    suspend fun rowsNeedingSense(): List<SenseRow> = dbQuery {
+        val words = SavedWords.selectAll()
+            .where { SavedWords.senseId.isNull() }
+            .map { it[SavedWords.word] }
+            .distinct()
+        if (words.isEmpty()) return@dbQuery emptyList()
+
+        SavedWords.selectAll()
+            .where { SavedWords.word inList words }
+            .map {
+                SenseRow(
+                    id = it[SavedWords.id],
+                    userId = it[SavedWords.userId],
+                    word = it[SavedWords.word],
+                    senseId = it[SavedWords.senseId],
+                    translation = it[SavedWords.translation],
+                    definition = it[SavedWords.definition],
+                    example = it[SavedWords.example]
+                )
+            }
+    }
+
+    /**
      * Removes every sense of [word], and the cards made from them.
      *
      * ⚠️ The cards go too. A card exists *because* the word was saved, and leaving it behind

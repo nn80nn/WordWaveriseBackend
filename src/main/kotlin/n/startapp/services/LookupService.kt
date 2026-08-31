@@ -664,7 +664,16 @@ class LookupService(
      */
     suspend fun repronounce(lemma: String): Int {
         val normalized = lemma.trim().lowercase()
-        val aggregate = aggregationService.aggregateDetailed(normalized, skipScrapers = false)
+        // ⚠️ An idiom no dictionary carries is not a failure of the repair — it is a word with
+        // nothing to bind. Letting NotFound out turned every phrase in the corpus into an error
+        // in the sweep's log, which is the fastest way to make a log unreadable.
+        val aggregate = try {
+            aggregationService.aggregateDetailed(normalized, skipScrapers = false)
+        } catch (e: NotFoundException) {
+            unpronounceable.put(normalized, true)
+            logger.info("No dictionary entry for '{}' — leaving the stored article alone", normalized)
+            return 0
+        }
 
         // Nothing to bind. Do not stamp the entry as repaired: a scraper that was down would
         // otherwise silence the word permanently.
