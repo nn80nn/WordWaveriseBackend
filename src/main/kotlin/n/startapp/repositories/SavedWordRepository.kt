@@ -208,10 +208,20 @@ class SavedWordRepository {
      * The way to see whether the sense migration actually did anything, from outside the
      * container. A data migration nobody can check is a claim, not a change.
      */
-    suspend fun senseCoverage(): Triple<Int, Int, Int> = dbQuery {
+    data class SenseCoverage(val total: Int, val withSense: Int, val withoutSense: List<String>)
+
+    suspend fun senseCoverage(): SenseCoverage = dbQuery {
         val total = SavedWords.selectAll().count().toInt()
-        val without = SavedWords.selectAll().where { SavedWords.senseId.isNull() }.count().toInt()
-        Triple(total, total - without, without)
+        // Named, not just counted: "ten words have no sense" is a mystery, and the answer is
+        // always the same kind of thing — a phrase the dictionaries have no article for.
+        val without = SavedWords.selectAll()
+            .where { SavedWords.senseId.isNull() }
+            .map { it[SavedWords.word] }
+            .distinct()
+            .sorted()
+            .take(50)
+        val withoutCount = SavedWords.selectAll().where { SavedWords.senseId.isNull() }.count().toInt()
+        SenseCoverage(total = total, withSense = total - withoutCount, withoutSense = without)
     }
 
     /** One saved row, thinly — what the sense migration needs to decide and nothing more. */

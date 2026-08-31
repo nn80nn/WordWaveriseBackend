@@ -41,13 +41,13 @@ fun Route.adminCorpusRoutes(
         // not written yet; it should never climb.
         get("/saved-senses") {
             if (call.rejectedAsNonAdmin()) return@get
-            val (total, withSense, withoutSense) = savedWords.senseCoverage()
+            val coverage = savedWords.senseCoverage()
             call.respond(
                 ApiResponse.success(
                     mapOf(
-                        "total" to total,
-                        "withSense" to withSense,
-                        "withoutSense" to withoutSense
+                        "total" to coverage.total.toString(),
+                        "withSense" to coverage.withSense.toString(),
+                        "withoutSense" to coverage.withoutSense.joinToString(", ")
                     )
                 )
             )
