@@ -292,9 +292,7 @@ class OpenAiCompatibleLlmClient : LlmClient {
     }
 
     private fun adaptDialect(provider: LlmProvider, errorBody: String, request: LlmRequest): Boolean {
-        val lower = errorBody.lowercase()
-        val mentionsResponseFormat = "response_format" in lower || "json_schema" in lower
-        if (mentionsResponseFormat && request.responseFormat != ResponseFormat.Text) {
+        if (request.responseFormat != ResponseFormat.Text && AiCompat.blamesStructuredOutput(errorBody)) {
             return AiCompat.downgradeStructuredMode(provider.name, logger)
         }
         return AiCompat.adaptTo(provider.name, errorBody, logger)

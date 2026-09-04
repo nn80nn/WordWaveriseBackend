@@ -96,6 +96,29 @@ object AiCompat {
     }
 
     /**
+     * Whether a rejection is about the response-format constraint we asked for.
+     *
+     * The obvious half is the field being named. The other half is a gateway that speaks OpenAI
+     * outward and Anthropic inward: it implements `response_format` as a tool the model is forced
+     * to call, so the upstream's complaint arrives talking about `tool_choice` — a field we never
+     * send. We ship no tools at all, so forced tool use can only have come from that translation:
+     *
+     *     "Thinking may not be enabled when tool_choice forces tool use"
+     *
+     * Read literally that message matched nothing adaptable, and every annotation died on a 400
+     * the client had a perfectly good answer to — ask for a weaker constraint. The prompt spells
+     * out the same shape as the schema, so the downgrade costs enforcement, not structure.
+     */
+    fun blamesStructuredOutput(errorBody: String): Boolean {
+        val body = errorBody.lowercase()
+        return "response_format" in body ||
+            "json_schema" in body ||
+            "tool_choice" in body ||
+            "tool use" in body ||
+            "tool_use" in body
+    }
+
+    /**
      * Inspects a provider 400 body and flips whichever field it complains about.
      * @return true when something changed and the call is worth retrying.
      */
