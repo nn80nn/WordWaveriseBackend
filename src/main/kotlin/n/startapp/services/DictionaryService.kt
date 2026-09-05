@@ -72,7 +72,7 @@ class DictionaryService(
 
         // Phrase queries skip scrapers (Cambridge/Oxford don't handle multi-word)
         logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from multiple sources")
-        val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase)
+        val aggregatedData = aggregationService.aggregateWordData(normalizedWord, isPhrase = isPhrase, urgent = true)
 
         // Russian translations — run in parallel (AI primary, MyMemory fallback)
         val (translation, entriesWithTranslations) = coroutineScope {
@@ -108,7 +108,7 @@ class DictionaryService(
 
         logger.info("Quick-fetching '${if (isPhrase) "phrase" else "word"}' '$word' from API sources only")
         val aggregatedData = withTimeoutOrNull(5_000) {
-            aggregationService.aggregateWordData(normalizedWord, skipScrapers = true, isPhrase = isPhrase)
+            aggregationService.aggregateWordData(normalizedWord, skipScrapers = true, isPhrase = isPhrase, urgent = true)
         } ?: run {
             logger.warn("Quick fetch timed out for '$word' after 5s")
             throw UpstreamTimeoutException("Источники не ответили вовремя для «$word». Попробуйте ещё раз.")

@@ -54,8 +54,22 @@ class LookupService(
 ) {
     private val logger = LoggerFactory.getLogger(LookupService::class.java)
 
-    /** How long a request waits for a fresh annotation before falling back to PENDING. */
+    /**
+     * How long the **first** request waits for a fresh annotation before falling back to PENDING.
+     *
+     * Short on purpose: this is the request with nothing on screen behind it, and the raw
+     * definitions it carries are what the reader looks at while the article is written.
+     */
     private val ANNOTATION_GRACE_MS = 1_200L
+
+    /**
+     * How long a **poll** waits — a request whose caller already has those definitions.
+     *
+     * Long polling rather than a shorter retry interval: the article is delivered the instant it
+     * exists instead of at the next tick, and one held request is cheaper than the several
+     * fruitless ones it replaces. Sized well under any reverse-proxy idle timeout.
+     */
+    private val POLL_GRACE_MS = 20_000L
 
     /**
      * How long the client should wait before asking again.
@@ -64,6 +78,13 @@ class LookupService(
      * that could not possibly be ready yet.
      */
     private val RETRY_AFTER_MS = 5_000
+
+    /**
+     * The same, once the client is polling: the waiting now happens inside [POLL_GRACE_MS], so a
+     * long pause here would just add itself to it. Not zero — a client that ignores the hold and
+     * hammers the endpoint should still be paced.
+     */
+    private val POLL_RETRY_AFTER_MS = 1_000
 
     /**
      * Hard ceiling on one annotation, sized above the client's own retry budget so it catches a
@@ -275,11 +296,14 @@ class LookupService(
         }
 
         // Cold path. Fetch fast (API sources only) so the user has something to look at even if
-        // annotation overruns the grace period.
+        // annotation overruns the grace period. `urgent` is the whole point of "fast" here: this
+        // is the call standing between the reader and the first thing on their screen.
         val isPhrase = resolution.kind == QueryKind.PHRASE
+        val coldStarted = System.currentTimeMillis()
         val aggregate = try {
             quickAggregates.getIfPresent(cacheKey)
-                ?: aggregationService.aggregateDetailed(lemma, skipScrapers = true, isPhrase = isPhrase)
+                ?: aggregationService
+                    .aggregateDetailed(lemma, skipScrapers = true, isPhrase = isPhrase, urgent = true)
                     .also { quickAggregates.put(cacheKey, it) }
         } catch (e: NotFoundException) {
             // Idioms and newer slang are routinely missing from every source. A written-from-
@@ -288,6 +312,7 @@ class LookupService(
             if (!isPhrase) throw e
             return ungroundedLookup(resolution, notice, lemma, cacheKey)
         }
+        val quickAggregateMs = System.currentTimeMillis() - coldStarted
 
         // The form has an entry, but the entry may say it is not a word. Wiktionary documents
         // misspellings — "occured" comes back as "Misspelling of occurred" — so having sources
@@ -356,7 +381,12 @@ class LookupService(
             )
         }
 
+        // Whether *this* request is the one that started the job decides how long it may wait
+        // below: the first caller has an empty screen and must be answered at once, a poll
+        // already has the raw definitions on it and can afford to hold the line.
+        var startedHere = false
         val job = inFlight.computeIfAbsent(cacheKey) {
+            startedHere = true
             scope.async {
                 try {
                     // Annotate from the FULL aggregate, not the quick one the response was built
@@ -366,13 +396,16 @@ class LookupService(
                     // annotating the quick aggregate would bake a pronunciation-less article in
                     // permanently. The user is not waiting on this — they already have the raw
                     // response — so the extra seconds cost nothing.
+                    val aggregateStarted = System.currentTimeMillis()
                     val full = runCatching {
                         aggregationService.aggregateDetailed(lemma, skipScrapers = false, isPhrase = isPhrase)
                     }.getOrElse {
                         logger.warn("Full aggregate failed for '{}', annotating quick data: {}", lemma, it.message)
                         aggregate
                     }
+                    val aggregateMs = System.currentTimeMillis() - aggregateStarted
 
+                    val annotationStarted = System.currentTimeMillis()
                     val result = withTimeoutOrNull(ANNOTATION_DEADLINE_MS) {
                         annotationService.annotate(lemma, resolution.surface, kind, full)
                     } ?: LexicalAnnotationService.AnnotationResult(
@@ -382,6 +415,19 @@ class LookupService(
                         ),
                         reason = "llm_timeout",
                         detail = "annotation exceeded ${ANNOTATION_DEADLINE_MS}ms"
+                    )
+
+                    // The one line that says where a cold word's wait actually went. Without it
+                    // a dead dictionary and a slow model are the same observation — "the article
+                    // took a while" — and the cheaper of the two problems stays invisible.
+                    logger.info(
+                        "Cold '{}' ready in {}ms: quick aggregate {}ms, full aggregate {}ms, annotation {}ms ({} fragments)",
+                        lemma,
+                        System.currentTimeMillis() - coldStarted,
+                        quickAggregateMs,
+                        aggregateMs,
+                        System.currentTimeMillis() - annotationStarted,
+                        full.sourceDefinitions.size
                     )
 
                     val outcome = AnnotationOutcome(result.entry, full.response, result.reason, result.detail)
@@ -421,7 +467,13 @@ class LookupService(
             }
         }
 
-        val outcome = withTimeoutOrNull(ANNOTATION_GRACE_MS) { job.await() }
+        // A first request must answer now — the screen is empty and the raw definitions in this
+        // response are the whole point of it. A poll is a different question: the reader is
+        // already looking at those definitions, so holding the request open costs them nothing
+        // and saves them the rest of the retry interval. Without this the article could sit
+        // finished on the server for most of five seconds before anybody was told.
+        val grace = if (startedHere) ANNOTATION_GRACE_MS else POLL_GRACE_MS
+        val outcome = withTimeoutOrNull(grace) { job.await() }
 
         return when {
             // Still being written. PENDING keeps the clients polling, so the fresh article
@@ -432,7 +484,8 @@ class LookupService(
                 entry = superseded?.entry,
                 annotationStatus = AnnotationStatus.PENDING,
                 annotationNote = if (superseded != null) "superseded_article" else null,
-                retryAfterMs = RETRY_AFTER_MS,
+                // Come straight back: the next request waits on the server instead of on a timer.
+                retryAfterMs = if (startedHere) RETRY_AFTER_MS else POLL_RETRY_AFTER_MS,
                 raw = if (superseded != null) supersededRaw else aggregate.response
             )
             // Same reasoning as the cached-degraded branch above: the previous article was

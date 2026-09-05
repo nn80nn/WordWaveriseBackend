@@ -6,6 +6,7 @@ import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.serialization.kotlinx.json.*
+import com.github.benmanes.caffeine.cache.Caffeine
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -23,6 +24,8 @@ import n.startapp.repositories.ScraperCacheRepository
 import n.startapp.services.scraper.ScraperService
 import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 /**
  * Aggregates word data from multiple dictionary APIs + web scrapers in parallel.
@@ -73,20 +76,74 @@ class DictionaryAggregationService {
     private val MAX_SCRAPER_TOKENS = 5
 
     /**
+     * How long one API source may take while somebody is watching a spinner.
+     *
+     * The shared [HttpTimeout] above is a ceiling on a request, not a budget for a screen: with
+     * four sources in parallel the first paint costs whatever the slowest one costs, so a single
+     * unreachable dictionary set the wait for every cold word. These sources answer in well under
+     * a second when they answer at all — Wiktionary and DataMuse in ~0.5s — so anything past this
+     * is not a slow reply, it is an absent one.
+     */
+    private val URGENT_SOURCE_BUDGET_MS = 2_500L
+
+    /**
+     * The same for a fetch nobody is waiting on — the aggregate an article is written from.
+     *
+     * Deliberately generous: a source that is merely slow still belongs in the corpus, and the
+     * article is already minutes away. The breaker below is what keeps a *dead* source from
+     * spending this budget over and over.
+     */
+    private val BACKGROUND_SOURCE_BUDGET_MS = 10_000L
+
+    private val health = SourceHealth()
+
+    /**
+     * What each source answered for a word, kept just long enough to be reused.
+     *
+     * A cold lookup aggregates the same word twice within seconds — once quickly, for the
+     * response the reader gets immediately, and once in full, for the article — so every API
+     * source was asked twice for an answer that could not have changed in between. That is the
+     * second half of the ten seconds a dead source used to cost.
+     *
+     * ⚠️ Only sources that **answered** are remembered, and a null answer counts: "this
+     * dictionary has no entry for this word" is knowledge, and re-asking for it is the same
+     * waste. A source that timed out is deliberately absent, so the background pass — which has
+     * a far bigger budget — gets to try it again rather than inheriting the quick path's verdict.
+     */
+    private val apiMemo = Caffeine.newBuilder()
+        .expireAfterWrite(3, TimeUnit.MINUTES)
+        .maximumSize(500)
+        .build<String, Map<String, SourcedWordData?>>()
+
+    /**
      * Fetch word data from all API sources + scrapers in parallel and merge results.
      * @param skipScrapers if true, skip web scrapers for faster response (API data only)
      * @param isPhrase if true, restricts to phrase-capable sources and skips scrapers
      * @throws NotFoundException if word not found in any source
      */
-    suspend fun aggregateWordData(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): WordDetailResponse =
-        aggregateDetailed(word, skipScrapers, isPhrase).response
+    suspend fun aggregateWordData(
+        word: String,
+        skipScrapers: Boolean = false,
+        isPhrase: Boolean = false,
+        urgent: Boolean = false
+    ): WordDetailResponse = aggregateDetailed(word, skipScrapers, isPhrase, urgent).response
 
     /**
      * Same fetch, but also returns the material the public response throws away:
      * the un-truncated per-source definition list (the grounding input for LLM annotation)
      * and the POS-tagged pronunciation map (homograph display).
+     *
+     * @param urgent somebody is waiting on this call for something to appear on screen, so the
+     *   API sources get [URGENT_SOURCE_BUDGET_MS] rather than [BACKGROUND_SOURCE_BUDGET_MS].
+     *   Affects only the APIs: the scrapers are what a full aggregate is *for*, and the paths
+     *   that cannot afford them skip them outright.
      */
-    suspend fun aggregateDetailed(word: String, skipScrapers: Boolean = false, isPhrase: Boolean = false): AggregatedWord {
+    suspend fun aggregateDetailed(
+        word: String,
+        skipScrapers: Boolean = false,
+        isPhrase: Boolean = false,
+        urgent: Boolean = false
+    ): AggregatedWord {
         val activeClients = if (isPhrase) phraseApiClients else allApiClients
 
         // Cambridge and Oxford slugify spaces to '-' and do carry idiom entries, so phrases were
@@ -94,15 +151,27 @@ class DictionaryAggregationService {
         // only ever came back from Wiktionary. Skip only what is too long to be a headword.
         val tokenCount = word.trim().split(Regex("\\s+")).size
         val actuallySkipScrapers = skipScrapers || tokenCount > MAX_SCRAPER_TOKENS
-        if (actuallySkipScrapers) {
-            logger.info("Fetching ${if (isPhrase) "phrase" else "word"} '$word' from ${activeClients.size} API sources only")
-        } else {
-            logger.info("Fetching word data for '$word' from ${activeClients.size} API sources + scrapers")
-        }
+
+        val memoKey = "${word.trim().lowercase()}|${if (isPhrase) "p" else "w"}"
+        val remembered = apiMemo.getIfPresent(memoKey).orEmpty()
+        val toFetch = activeClients.filter { it.sourceName !in remembered }
+        val budget = if (urgent) URGENT_SOURCE_BUDGET_MS else BACKGROUND_SOURCE_BUDGET_MS
+
+        // ⚠️ When the breaker would leave us with nothing at all, ask anyway. A lookup that comes
+        // back empty because we declined to try is indistinguishable from a word that does not
+        // exist — and on the phrase path "not found" is exactly what makes the model write an
+        // article from nothing, which then lives in the corpus forever. Paying the budget is the
+        // cheaper mistake. Note this asks about *what is left to fetch*: a source already
+        // answered from the memo counts, so a single dead dictionary never triggers it.
+        val lastResort = remembered.isEmpty() &&
+            toFetch.isNotEmpty() &&
+            toFetch.all { health.isOpen(it.sourceName) }
+
+        val started = System.currentTimeMillis()
 
         // Run API clients and scrapers in parallel
-        val (apiResults, scraperResults) = coroutineScope {
-            val apis = async { fetchFromApiSources(word, activeClients) }
+        val (fetched, scraperResults) = coroutineScope {
+            val apis = async { fetchFromApiSources(word, toFetch, budget, ignoreHealth = lastResort) }
             val scrapers = async {
                 if (actuallySkipScrapers) return@async emptyList<n.startapp.models.scraper.ScrapeEnrichment>()
                 withTimeoutOrNull(12_000) {
@@ -119,7 +188,12 @@ class DictionaryAggregationService {
             apis.await() to scrapers.await()
         }
 
-        val validApiResults = apiResults.filterNotNull()
+        val answered = remembered + fetched.results
+        if (answered.isNotEmpty()) apiMemo.put(memoKey, answered)
+
+        // Client order, not answer order: Wiktionary is deliberately first so the later take()
+        // cannot push it out, and a memo hit must not quietly reshuffle that.
+        val validApiResults = activeClients.mapNotNull { answered[it.sourceName] }
 
         // "Found" must mean "somebody had a definition". DataMuse answers 200 with synonyms for
         // plenty of non-words, which used to make a garbage query look like a hit and return a
@@ -127,26 +201,93 @@ class DictionaryAggregationService {
         val hasRealDefinitions = validApiResults.any { it.definitions.isNotEmpty() } ||
             scraperResults.any { it.senses.isNotEmpty() }
 
+        // One line, and it has to name every source and its cost. A dead upstream is otherwise
+        // indistinguishable from a slow model: both look like "the article took a while".
+        val reused = remembered.keys.filter { key -> activeClients.any { it.sourceName == key } }
+        logger.info(
+            "'{}' aggregated in {}ms ({}{}): {} API source(s), {} scraper source(s){}",
+            word,
+            System.currentTimeMillis() - started,
+            if (urgent) "urgent ${budget}ms" else "background ${budget}ms",
+            if (actuallySkipScrapers) ", no scrapers" else "",
+            validApiResults.size,
+            scraperResults.size,
+            buildString {
+                if (fetched.timings.isNotEmpty()) append(" [").append(fetched.timings.joinToString(" ")).append("]")
+                if (reused.isNotEmpty()) append(" reused[").append(reused.joinToString(" ")).append("]")
+            }
+        )
+
         if (!hasRealDefinitions) {
             logger.warn("Word '$word' not found in any source (no definition-bearing result)")
             throw NotFoundException("Word '$word' not found in dictionary")
         }
 
-        logger.info("'$word': ${validApiResults.size} API source(s), ${scraperResults.size} scraper source(s)")
-
         return mergeResults(word, validApiResults, scraperResults)
     }
 
-    private suspend fun fetchFromApiSources(word: String, clients: List<DictionaryApiClient>): List<SourcedWordData?> = coroutineScope {
-        clients.map { client ->
+    /** What one round of API calls produced: the answers, and what each of them cost. */
+    private data class ApiFetch(
+        /** Only sources that answered — see [apiMemo] for why a timeout is not an answer. */
+        val results: Map<String, SourcedWordData?>,
+        /** `Wiktionary=412ms`, `FreeDictionary=timeout`, `DataMuse=skipped` — for the one log line. */
+        val timings: List<String>
+    )
+
+    /** One source's turn: whether it answered, what it said, and how long it took to say it. */
+    private data class SourceOutcome(
+        val source: String,
+        val answered: Boolean,
+        val data: SourcedWordData?,
+        val timing: String
+    )
+
+    private suspend fun fetchFromApiSources(
+        word: String,
+        clients: List<DictionaryApiClient>,
+        budgetMs: Long,
+        /** Nothing else can answer this word — see the `lastResort` note at the call site. */
+        ignoreHealth: Boolean = false
+    ): ApiFetch = coroutineScope {
+        val outcomes = clients.map { client ->
             async {
-                try { client.fetchWordData(word) }
-                catch (e: Exception) {
-                    logger.warn("Error fetching from ${client.sourceName}: ${e.message}")
-                    null
+                val source = client.sourceName
+                if (!ignoreHealth && health.isOpen(source)) {
+                    return@async SourceOutcome(source, answered = false, data = null, timing = "$source=skipped")
                 }
+
+                val started = System.currentTimeMillis()
+                // ⚠️ The `runCatching` sits *inside* the timeout on purpose: `withTimeoutOrNull`
+                // returns null both for "timed out" and for "the client answered null", and those
+                // must not be confused — one is an outage, the other an ordinary "no entry for
+                // this word". Wrapping the answer is what keeps them distinguishable, and the
+                // breaker depends on the distinction.
+                val outcome = withTimeoutOrNull(budgetMs) {
+                    runCatching { client.fetchWordData(word) }
+                }
+                val ms = System.currentTimeMillis() - started
+
+                if (outcome == null) {
+                    if (health.recordTimeout(source)) {
+                        logger.warn(
+                            "Source '{}' stopped answering ({} timeouts in a row); skipping it for {} minutes",
+                            source, SourceHealth.BREAKER_THRESHOLD, SourceHealth.BREAKER_OPEN_MS / 60_000
+                        )
+                    }
+                    return@async SourceOutcome(source, answered = false, data = null, timing = "$source=timeout(${ms}ms)")
+                }
+
+                if (health.recordAnswer(source)) logger.info("Source '{}' is answering again", source)
+                outcome.exceptionOrNull()?.let { logger.warn("Error fetching from {}: {}", source, it.message) }
+
+                SourceOutcome(source, answered = true, data = outcome.getOrNull(), timing = "$source=${ms}ms")
             }
         }.awaitAll()
+
+        ApiFetch(
+            results = outcomes.filter { it.answered }.associate { it.source to it.data },
+            timings = outcomes.map { it.timing }
+        )
     }
 
     // ── Smart merge & deduplication ──────────────────────────────────────────
@@ -358,5 +499,55 @@ class DictionaryAggregationService {
     fun close() {
         httpClient.close()
         scraperService.close()
+    }
+}
+
+/**
+ * Which upstream sources are worth asking right now.
+ *
+ * A source that has stopped answering is not free: every lookup pays its whole budget to learn
+ * nothing, and a cold word pays it twice — once for the response the reader is staring at, and
+ * again for the aggregate the article is written from. `api.dictionaryapi.dev` sat behind a
+ * Cloudflare 522 and charged ten seconds of that per word, which was most of the wait for a
+ * word the corpus did not have yet.
+ *
+ * ⚠️ Only a **timeout** counts against a source, never an empty answer. The clients swallow their
+ * own errors and return null for "no entry here" just as they do for "the request failed", so
+ * counting nulls would open the breaker on a healthy dictionary as soon as somebody looked up a
+ * few rare words. Exceeding the budget is the one signal that cannot also mean "this word isn't
+ * in me".
+ */
+internal class SourceHealth {
+    private val consecutiveTimeouts = ConcurrentHashMap<String, Int>()
+    private val openUntil = ConcurrentHashMap<String, Long>()
+
+    fun isOpen(source: String): Boolean = (openUntil[source] ?: 0L) > System.currentTimeMillis()
+
+    /** @return true when this timeout is the one that opens the breaker — i.e. worth a log line. */
+    fun recordTimeout(source: String): Boolean {
+        val timeouts = consecutiveTimeouts.merge(source, 1) { a, b -> a + b } ?: 1
+        if (timeouts < BREAKER_THRESHOLD) return false
+        val alreadyOpen = isOpen(source)
+        openUntil[source] = System.currentTimeMillis() + BREAKER_OPEN_MS
+        return !alreadyOpen
+    }
+
+    /** @return true when this answer is the one that closes the breaker. */
+    fun recordAnswer(source: String): Boolean {
+        val hadFailed = (consecutiveTimeouts.put(source, 0) ?: 0) > 0
+        val wasOpen = openUntil.remove(source) != null
+        return wasOpen || hadFailed
+    }
+
+    companion object {
+        /** One slow moment is weather; three in a row is an outage. */
+        const val BREAKER_THRESHOLD = 3
+
+        /**
+         * Long enough that a dead source stops costing anything, short enough that its return is
+         * noticed without a deploy. When this expires the next lookup asks it again, and a single
+         * answer closes the breaker.
+         */
+        const val BREAKER_OPEN_MS = 5 * 60_000L
     }
 }
