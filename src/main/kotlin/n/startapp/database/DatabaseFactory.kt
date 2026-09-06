@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import n.startapp.database.tables.AppSettings
 import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.Categories
+import n.startapp.database.tables.ContentReports
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.LexicalEntries
 import n.startapp.database.tables.LlmCache
@@ -42,7 +43,8 @@ object DatabaseFactory {
     val ALL_TABLES: Array<Table> = arrayOf(
         Users, Categories, SavedWords, SavedWordCategories, Flashcards, ScraperCache, TestingRequests,
         LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
-        StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts
+        StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts,
+        ContentReports
     )
 
     fun init() {

@@ -3,6 +3,7 @@ package n.startapp.services
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.Categories
+import n.startapp.database.tables.ContentReports
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.PushSubscriptions
@@ -95,6 +96,13 @@ class AccountDeletionService {
         // The request is a record of something that happened, so it is unlinked, not deleted.
         TestingRequests.update({ TestingRequests.userId eq userId }) {
             it[TestingRequests.userId] = null
+        }
+        // Same for a complaint about generated text: it is about the article, not the reader,
+        // and it still has to be acted on after they are gone. Unlinked, not deleted — and it
+        // has to be one of the two, because the column references users.id and would otherwise
+        // make the account undeletable.
+        ContentReports.update({ ContentReports.userId eq userId }) {
+            it[ContentReports.userId] = null
         }
         Flashcards.deleteWhere { Flashcards.userId eq userId }
         val savedWordIds = SavedWords

@@ -32,6 +32,7 @@ import n.startapp.routes.pushRoutes
 import n.startapp.routes.savedWordsRoutes
 import n.startapp.routes.seoRoutes
 import n.startapp.routes.sharedFolderRoutes
+import n.startapp.routes.reportRoutes
 import n.startapp.routes.testingRoutes
 import n.startapp.services.AiService
 import n.startapp.services.DictionaryService
@@ -172,6 +173,9 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // Practice sessions built from a folder (protected)
         exerciseRoutes(services.exerciseService)
+
+        // Reader complaints about generated text. Google Play requires the app to have this.
+        reportRoutes()
 
         // Web Push subscriptions. The public key is public; storing and sending are behind JWT.
         pushRoutes(services.pushService)

@@ -90,6 +90,9 @@ fun Application.adminRoutes() {
     routing {
         route("/api/admin") {
 
+            // ── Reader complaints about generated text ─────────────────────
+            adminReportRoutes()
+
             // ── Stats ──────────────────────────────────────────────────────
             get("/stats") {
                 if (call.rejectedAsNonAdmin()) return@get

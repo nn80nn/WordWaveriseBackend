@@ -7,16 +7,7 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.client.*
-import io.ktor.client.call.*
-import io.ktor.client.engine.cio.*
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.client.request.*
-import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import n.startapp.exceptions.BadRequestException
 import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
@@ -31,26 +22,79 @@ import n.startapp.models.auth.VerifyEmailRequest
 import n.startapp.models.auth.toDTO
 import n.startapp.repositories.UserRepository
 import n.startapp.services.EmailService
+import n.startapp.services.GoogleIdentityService
 import n.startapp.utils.EnvConfig
 import n.startapp.utils.JwtUtil
 import n.startapp.utils.PasswordUtil
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
-private val httpClient = HttpClient(CIO) {
-    install(ContentNegotiation) { json() }
-}
-
 private fun generateVerificationCode(): String = (100000..999999).random().toString()
 
+/**
+ * ⚠️ `currentPassword` is absent for an account created through Google — it has no password to
+ * name. For those the endpoint *sets* a first password, and `googleIdToken` is what proves the
+ * owner is present.
+ */
 @Serializable
-data class ChangePasswordRequest(val currentPassword: String, val newPassword: String)
+data class ChangePasswordRequest(
+    val newPassword: String,
+    val currentPassword: String? = null,
+    val googleIdToken: String? = null
+)
 
 @Serializable
-data class ChangeEmailRequest(val newEmail: String, val password: String)
+data class ChangeEmailRequest(
+    val newEmail: String,
+    val password: String? = null,
+    val googleIdToken: String? = null
+)
 
 @Serializable
-data class ChangeLoginRequest(val login: String, val password: String)
+data class ChangeLoginRequest(
+    val login: String,
+    val password: String? = null,
+    val googleIdToken: String? = null
+)
+
+/**
+ * The message a client gets when it sent a password for an account that has none.
+ *
+ * A code rather than prose: the app has to react to it by launching Google sign-in, and it
+ * cannot do that by matching on a sentence that translation would change.
+ */
+const val GOOGLE_REAUTH_REQUIRED = "google_reauth_required"
+
+/**
+ * Proves the account owner is the one asking, whichever way they signed up.
+ *
+ * ⚠️ An account created through Google lives with an empty `password_hash` (`UserRepository`
+ * writes `""`), and bcrypt has nothing to verify against — so every one of these endpoints used
+ * to answer "password is incorrect" to the only password that could ever be right, which is
+ * none. Deleting the account was among them, and Google Play requires that to work. For such an
+ * account the proof is a fresh id token whose `sub` matches the one on file: the address alone
+ * would not do, since two accounts can share an address across providers.
+ */
+private suspend fun requireReauth(
+    user: n.startapp.models.auth.User,
+    password: String?,
+    googleIdToken: String?
+) {
+    if (user.passwordHash.isBlank()) {
+        val token = googleIdToken?.takeIf { it.isNotBlank() }
+            ?: throw BadRequestException(GOOGLE_REAUTH_REQUIRED)
+        val identity = GoogleIdentityService.verify(token)
+        if (user.googleId == null || identity.googleId != user.googleId) {
+            throw UnauthorizedException("This Google account does not own the profile")
+        }
+    } else {
+        val given = password?.takeIf { it.isNotBlank() }
+            ?: throw BadRequestException("Password is required")
+        if (!PasswordUtil.verifyPassword(given, user.passwordHash)) {
+            throw UnauthorizedException("Password is incorrect")
+        }
+    }
+}
 
 fun Route.authRoutes() {
     val userRepository = UserRepository()
@@ -160,44 +204,8 @@ fun Route.authRoutes() {
         // Google OAuth endpoint
         post("/google") {
             val request = call.receive<GoogleAuthRequest>()
-            if (request.idToken.isBlank()) throw BadRequestException("idToken is required")
-
-            // Verify with Google tokeninfo
-            val tokenInfoUrl = "https://oauth2.googleapis.com/tokeninfo?id_token=${request.idToken}"
-            val googleResponse = try {
-                httpClient.get(tokenInfoUrl)
-            } catch (e: Exception) {
-                throw BadRequestException("Failed to verify Google token")
-            }
-
-            if (googleResponse.status.value != 200) {
-                throw UnauthorizedException("Invalid Google token")
-            }
-
-            val body = googleResponse.body<String>()
-            val json = Json.parseToJsonElement(body).jsonObject
-            val email = json["email"]?.jsonPrimitive?.content
-                ?: throw BadRequestException("Email not found in Google token")
-            val googleId = json["sub"]?.jsonPrimitive?.content
-                ?: throw BadRequestException("Subject not found in Google token")
-
-            // Optional: verify aud matches our client id
-            val clientId = EnvConfig.googleClientId
-            if (clientId.isNotBlank()) {
-                val aud = json["aud"]?.jsonPrimitive?.content
-                if (aud != clientId) throw UnauthorizedException("Token audience mismatch")
-            }
-
-            // Совпадение адреса — это то, что склеивает вход по паролю и вход через Google в
-            // один аккаунт, поэтому неподтверждённый адрес принимать нельзя: тогда чужой
-            // Google-аккаунт, заведённый на наш email, забрал бы себе учётку с паролем.
-            // tokeninfo отдаёт поле строкой, а не булевым.
-            val emailVerified = json["email_verified"]?.jsonPrimitive?.content
-            if (emailVerified != "true") {
-                throw UnauthorizedException("Google account email is not verified")
-            }
-
-            val user = userRepository.findOrCreateByGoogle(email, googleId)
+            val identity = GoogleIdentityService.verify(request.idToken)
+            val user = userRepository.findOrCreateByGoogle(identity.email, identity.googleId)
             val token = JwtUtil.generateToken(user)
             call.respond(ApiResponse.success(AuthResponse(token = token, user = user.toDTO())))
         }
@@ -288,8 +296,8 @@ fun Route.authRoutes() {
                     ?: throw UnauthorizedException("Invalid token")
 
                 val request = call.receive<ChangePasswordRequest>()
-                if (request.currentPassword.isBlank() || request.newPassword.isBlank()) {
-                    throw BadRequestException("Both passwords are required")
+                if (request.newPassword.isBlank()) {
+                    throw BadRequestException("New password is required")
                 }
                 if (request.newPassword.length < 6) {
                     throw BadRequestException("New password must be at least 6 characters")
@@ -298,9 +306,9 @@ fun Route.authRoutes() {
                 val user = userRepository.findById(userId)
                     ?: throw UnauthorizedException("User not found")
 
-                if (!PasswordUtil.verifyPassword(request.currentPassword, user.passwordHash)) {
-                    throw UnauthorizedException("Current password is incorrect")
-                }
+                // For a Google account this endpoint sets a first password rather than changing
+                // one, so what it asks for is a Google token — there is no old password to name.
+                requireReauth(user, request.currentPassword, request.googleIdToken)
 
                 val newHash = PasswordUtil.hashPassword(request.newPassword)
                 userRepository.updatePassword(userId, newHash)
@@ -315,8 +323,8 @@ fun Route.authRoutes() {
                     ?: throw UnauthorizedException("Invalid token")
 
                 val request = call.receive<ChangeEmailRequest>()
-                if (request.newEmail.isBlank() || request.password.isBlank()) {
-                    throw BadRequestException("Email and password are required")
+                if (request.newEmail.isBlank()) {
+                    throw BadRequestException("Email is required")
                 }
                 if (!isValidEmail(request.newEmail)) {
                     throw BadRequestException("Invalid email format")
@@ -325,9 +333,7 @@ fun Route.authRoutes() {
                 val user = userRepository.findById(userId)
                     ?: throw UnauthorizedException("User not found")
 
-                if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
-                    throw UnauthorizedException("Password is incorrect")
-                }
+                requireReauth(user, request.password, request.googleIdToken)
 
                 if (userRepository.existsByEmail(request.newEmail)) {
                     throw BadRequestException("Email already in use")
@@ -347,8 +353,8 @@ fun Route.authRoutes() {
                     ?: throw UnauthorizedException("Invalid token")
 
                 val request = call.receive<ChangeLoginRequest>()
-                if (request.login.isBlank() || request.password.isBlank()) {
-                    throw BadRequestException("Login and password are required")
+                if (request.login.isBlank()) {
+                    throw BadRequestException("Login is required")
                 }
 
                 val newLogin = request.login.trim()
@@ -358,9 +364,7 @@ fun Route.authRoutes() {
                 val user = userRepository.findById(userId)
                     ?: throw UnauthorizedException("User not found")
 
-                if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
-                    throw UnauthorizedException("Password is incorrect")
-                }
+                requireReauth(user, request.password, request.googleIdToken)
 
                 if (userRepository.existsByLogin(newLogin) && user.login != newLogin) {
                     throw BadRequestException("This login is already taken")
@@ -379,16 +383,11 @@ fun Route.authRoutes() {
                     ?: throw UnauthorizedException("Invalid token")
 
                 val request = call.receive<RequestDeletionRequest>()
-                if (request.password.isBlank()) {
-                    throw BadRequestException("Password is required")
-                }
 
                 val user = userRepository.findById(userId)
                     ?: throw UnauthorizedException("User not found")
 
-                if (!PasswordUtil.verifyPassword(request.password, user.passwordHash)) {
-                    throw UnauthorizedException("Password is incorrect")
-                }
+                requireReauth(user, request.password, request.googleIdToken)
 
                 val scheduledFor = Instant.now().plus(EnvConfig.accountDeletionGraceDays.toLong(), ChronoUnit.DAYS)
                 userRepository.requestDeletion(userId, scheduledFor)

@@ -24,7 +24,16 @@ data class UserDTO(
     val login: String?,
     val createdAt: String,
     val emailVerified: Boolean,
-    val deletionScheduledFor: String? = null
+    val deletionScheduledFor: String? = null,
+    /**
+     * Whether this account has a password at all.
+     *
+     * An account created through Google has none, and every screen that re-asks "is this really
+     * you" has to know which credential to ask for. Without this the delete-account dialog can
+     * only offer a password field, and a Google user stands in front of a form they can never
+     * fill in. Defaulted true so a client built before this field is unaffected.
+     */
+    val hasPassword: Boolean = true
 )
 
 @Serializable
@@ -64,9 +73,16 @@ data class ResendVerificationRequest(
     val email: String
 )
 
+/**
+ * Confirmation for an operation that needs the account owner to prove they are present.
+ *
+ * Exactly one of the two arrives: the password for an account that has one, a fresh Google id
+ * token for an account created through Google. See `requireReauth` in AuthRoutes.
+ */
 @Serializable
 data class RequestDeletionRequest(
-    val password: String
+    val password: String? = null,
+    val googleIdToken: String? = null
 )
 
 @Serializable
@@ -91,5 +107,6 @@ fun User.toDTO(): UserDTO = UserDTO(
     login = login,
     createdAt = createdAt.toString(),
     emailVerified = emailVerified,
-    deletionScheduledFor = deletionScheduledFor?.toString()
+    deletionScheduledFor = deletionScheduledFor?.toString(),
+    hasPassword = passwordHash.isNotBlank()
 )
