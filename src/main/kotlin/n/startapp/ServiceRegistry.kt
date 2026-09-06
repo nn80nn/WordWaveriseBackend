@@ -53,7 +53,7 @@ class ServiceRegistry {
         cache = llmCacheRepository
     )
     val dictionaryService = DictionaryService(aiService, lexicalEntryRepository)
-    val suggestService = SuggestService(ruEnTranslationService)
+    val suggestService = SuggestService(ruEnTranslationService, lexicalEntryRepository)
 
     private val aggregationService = DictionaryAggregationService()
     private val annotationService = LexicalAnnotationService(llmClient)

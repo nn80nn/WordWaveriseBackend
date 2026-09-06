@@ -32,6 +32,9 @@ import java.security.MessageDigest
 /** A headword the corpus can already answer for, with the timestamp of its newest article. */
 data class CorpusLemma(val lemma: String, val updatedAt: Long)
 
+/** Заголовок корпуса и то, сколько раз его читали, — порядок подсказок при вводе. */
+data class CorpusHeadword(val lemma: String, val hits: Long)
+
 /** An entry plus the raw aggregate it was built from. */
 data class StoredEntry(
     val entry: LexicalEntry,
@@ -335,6 +338,35 @@ class LexicalEntryRepository {
             .orderBy(LexicalEntries.lemma to SortOrder.ASC)
             .limit(limit)
             .map { it[LexicalEntries.lemma] }
+    }
+
+
+    /**
+     * Заголовки корпуса, начинающиеся с того, что человек уже напечатал.
+     *
+     * ⚠️ Это лучшая подсказка, которая у нас есть, и она ничего не стоит: у слова из корпуса
+     * статья **уже написана**, то есть открытие будет мгновенным, а перевод и часть речи можно
+     * показать прямо в списке. Внешнее автодополнение не знает ни того, ни другого — оно даёт
+     * написание и оставляет человека гадать, туда ли он идёт.
+     *
+     * Порядок — по числу открытий: корпус прогревается по частотному списку, и при нулевых
+     * счётчиках это вырождается в алфавит, что честно (ранжировать нечем), но как только
+     * слово начали читать, оно поднимается само.
+     */
+    suspend fun headwordsByPrefix(prefix: String, limit: Int = 8): List<CorpusHeadword> = dbQuery {
+        // ⚠️ `%` и `_` в запросе — это подстановочные знаки LIKE, а не буквы: без чистки
+        // «%» подсказывал бы весь корпус, а «_» — любое слово нужной длины.
+        val needle = prefix.trim().lowercase().filter { it.isLetter() || it == '\'' || it == '-' || it == ' ' }
+        if (needle.isBlank()) return@dbQuery emptyList()
+
+        val popularity = LexicalEntries.hitCount.max()
+        LexicalEntries
+            .select(LexicalEntries.lemma, popularity)
+            .where { LexicalEntries.lemma like "$needle%" }
+            .groupBy(LexicalEntries.lemma)
+            .orderBy(popularity to SortOrder.DESC, LexicalEntries.lemma to SortOrder.ASC)
+            .limit(limit)
+            .map { CorpusHeadword(it[LexicalEntries.lemma], it[popularity] ?: 0L) }
     }
 
     // ── Admin views ─────────────────────────────────────────────────────────
