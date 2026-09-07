@@ -1,7 +1,12 @@
 package n.startapp.services.ai
 
-/** Which configured model to use. STRONG is the quality model; FAST is for cheap side tasks. */
-enum class LlmModelTier { STRONG, FAST }
+/**
+ * Which configured model to use.
+ *
+ * STRONG is the quality model; FAST is for cheap side tasks; DRAFT writes the stand-in article
+ * a reader sees while STRONG is still working, so it is chosen for latency above all.
+ */
+enum class LlmModelTier { STRONG, FAST, DRAFT }
 
 /**
  * How the provider should constrain the reply.

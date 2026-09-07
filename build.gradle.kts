@@ -91,7 +91,10 @@ dependencies {
 tasks.withType<Test> {
     testLogging {
         events("passed", "skipped", "failed")
-        showStandardStreams = false
+        // The benchmark's whole answer is in the provider log lines it produces
+        // (`llm task=... ms=... attempts=... finish=...`); swallowing them leaves a number
+        // with no explanation behind it.
+        showStandardStreams = System.getenv("DRAFT_BENCH") == "1"
         afterSuite(KotlinClosure2({ desc: TestDescriptor, result: TestResult ->
             if (desc.parent == null) {
                 println("\n========================================")

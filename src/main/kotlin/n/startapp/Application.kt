@@ -76,11 +76,12 @@ private fun logEffectiveAiConfig() {
     val logger = LoggerFactory.getLogger("AiConfig")
     val domain = EnvConfig.aiDomen
     logger.info(
-        "AI config: domain={} key={} model={} modelFast={} tokenParam={} temperature={} timeoutMs={}",
+        "AI config: domain={} key={} model={} modelFast={} modelDraft={} tokenParam={} temperature={} timeoutMs={}",
         domain.ifBlank { "<MISSING>" },
         if (EnvConfig.aiApiKey.isBlank()) "<MISSING>" else "set",
         EnvConfig.aiModel,
         EnvConfig.aiModelFast,
+        if (EnvConfig.fastArticleEnabled) EnvConfig.aiModelDraft else "<off>",
         EnvConfig.aiTokenParam,
         if (EnvConfig.aiSupportsTemperature) "sent" else "omitted",
         EnvConfig.aiTimeoutMs

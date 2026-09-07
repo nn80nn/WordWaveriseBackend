@@ -150,6 +150,16 @@ data class LexicalEntry(
     val aiGenerated: Boolean = false,
     /** Annotation failed validation twice; this entry was derived mechanically from the raw data. */
     val degraded: Boolean = false,
+    /**
+     * A stand-in article: written in seconds by the flash model from API sources only, shown
+     * while the real one is being written, and replaced by it.
+     *
+     * ⚠️ Never stored. A draft has fewer senses than the article that replaces it, and sense ids
+     * are positions (`n1`, `v2`) — so a bookmark taken on a draft would name a different meaning
+     * once the real article lands. The clients therefore do not offer saving while this is set,
+     * which is why it has to travel to them rather than staying a server-side detail.
+     */
+    val draft: Boolean = false,
 
     val schemaVersion: Int = LEXICAL_SCHEMA_VERSION,
     val promptVersion: Int = 0,

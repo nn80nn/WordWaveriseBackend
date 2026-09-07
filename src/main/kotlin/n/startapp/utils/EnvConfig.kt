@@ -92,6 +92,26 @@ object EnvConfig {
     val aiModelFast: String get() = get("AI_MODEL_FAST", "").ifBlank { aiModel }
 
     /**
+     * The model that writes the *draft* article — the one a reader gets in seconds while the
+     * real one is still being written. Meant to be a flash-tier model: it is asked for a much
+     * smaller article and its answer is never stored.
+     */
+    val aiModelDraft: String get() = get("AI_MODEL2", "")
+
+    /**
+     * Whether a cold lookup writes a draft article at all.
+     *
+     * ⚠️ Off unless [aiModelDraft] names a **different** model from [aiModel]. A draft written by
+     * the quality model would double what every cold word costs to buy a few seconds — the whole
+     * point of the stage is that the fast article is cheap. Without a second model there is
+     * nothing to be fast with, so the stage disables itself rather than pretending.
+     */
+    val fastArticleEnabled: Boolean
+        get() = get("FAST_ARTICLE_ENABLED", "true").equals("true", true) &&
+            aiModelDraft.isNotBlank() &&
+            !aiModelDraft.equals(aiModel, ignoreCase = true)
+
+    /**
      * Name of the token-limit field in the chat-completions body.
      * gpt-5.x requires `max_completion_tokens`; older/OSS models want `max_tokens`.
      * The default matches [aiModel]; a mismatch is auto-corrected at runtime on the first

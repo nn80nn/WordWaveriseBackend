@@ -62,6 +62,23 @@ object SettingsCatalog {
             hint = "Для резолва запроса. Пусто — берётся основная."
         ),
         SettingSpec(
+            key = "AI_MODEL2",
+            label = "Модель черновика",
+            group = "Модель",
+            type = SettingType.TEXT,
+            default = "",
+            hint = "Пишет быструю статью, пока идёт настоящая. Должна отличаться от основной — " +
+                "иначе черновик стоит столько же, сколько статья, и стадия выключается сама."
+        ),
+        SettingSpec(
+            key = "FAST_ARTICLE_ENABLED",
+            label = "Быстрая статья",
+            group = "Модель",
+            type = SettingType.BOOL,
+            default = "true",
+            hint = "Показывать черновик, пока пишется полная статья. Черновик не сохраняется."
+        ),
+        SettingSpec(
             key = "AI_MODEL_POOL",
             label = "Модель резервного пула",
             group = "Модель",

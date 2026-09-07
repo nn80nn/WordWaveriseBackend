@@ -81,7 +81,10 @@ fun Route.lookupRoutes(
             if (call.rejectedAsNonAdmin()) return@get
             val query = call.request.queryParameters["query"]
                 ?: throw BadRequestException("Query parameter 'query' is required")
-            call.respond(ApiResponse.success(lookupService.diagnose(query)))
+            // `?stage=draft` times the fast stage instead — the same question asked of the
+            // model a cold lookup actually shows first.
+            val draft = call.request.queryParameters["stage"].equals("draft", ignoreCase = true)
+            call.respond(ApiResponse.success(lookupService.diagnose(query, draft)))
         }
 
         // Drops the cached article for a lemma so the next lookup regenerates it — the escape

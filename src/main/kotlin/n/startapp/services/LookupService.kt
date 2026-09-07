@@ -97,12 +97,36 @@ class LookupService(
      */
     private val ANNOTATION_DEADLINE_MS = 420_000L
 
+    /**
+     * Hard ceiling on a draft.
+     *
+     * A draft exists to be quicker than the article it stands in for; past this it is neither,
+     * and the reader is better served by the raw definitions they already have than by a request
+     * held open waiting for a stand-in. Sized under [POLL_GRACE_MS] so a poll never returns
+     * empty-handed *because* it was waiting on a draft that was going to miss anyway.
+     */
+    private val DRAFT_DEADLINE_MS = 18_000L
+
     /** Failures the provider may recover from on its own — mainly rate limiting. */
     private val TRANSIENT_REASONS = setOf("llm_call_failed", "llm_timeout")
     private val TRANSIENT_RETRY_MS = 45_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight = ConcurrentHashMap<String, Deferred<AnnotationOutcome>>()
+    private val draftInFlight = ConcurrentHashMap<String, Deferred<LexicalEntry?>>()
+
+    /**
+     * Draft articles, held only for as long as the real one takes to write.
+     *
+     * ⚠️ Memory and nothing else — a draft must never reach Postgres. It is written from API
+     * sources alone with three senses per part of speech, and the rows have no TTL, so one
+     * stored draft is a permanently thin article for a word nobody will ever look up cold
+     * again. It also stands *below* the real article in every branch that chooses between them.
+     */
+    private val draftArticles = Caffeine.newBuilder()
+        .expireAfterWrite(15, TimeUnit.MINUTES)
+        .maximumSize(500)
+        .build<String, LexicalEntry>()
 
     /**
      * Short-lived so a hot word skips the DB round-trip; the durable copy lives in Postgres.
@@ -372,14 +396,27 @@ class LookupService(
                 resolution = resolution,
                 notice = notice,
                 // A real article the model wrote beats one derived mechanically from raw data,
-                // even an older one. `degraded` still describes what just happened, so the
-                // clients keep retrying on the codes that are worth retrying.
-                entry = superseded?.entry ?: failed.entry,
+                // even an older one — and a draft, thin as it is, was still written by a model
+                // and passed the validator. `degraded` still describes what just happened, so
+                // the clients keep retrying on the codes that are worth retrying.
+                entry = superseded?.entry ?: draftArticles.getIfPresent(cacheKey) ?: failed.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = failed.reason,
                 raw = if (superseded != null) supersededRaw else aggregate.response
             )
         }
+
+        // The stand-in article, written from the quick aggregate by the flash model while the
+        // real one is still fetching dictionaries. What it replaces is not a spinner but a list
+        // of raw English fragments the reader looks at for the next minute or two — which is a
+        // dictionary in the sense that a pile of bricks is a house.
+        //
+        // ⚠️ Not started when a previous version of the article is in hand. That one is a full
+        // article the quality model wrote and the validator passed; a draft could only make the
+        // screen worse, and would spend tokens doing it.
+        val draftJob = if (EnvConfig.fastArticleEnabled && superseded == null) {
+            startDraft(cacheKey, lemma, resolution.surface, kind, aggregate)
+        } else null
 
         // Whether *this* request is the one that started the job decides how long it may wait
         // below: the first caller has an empty screen and must be answered at once, a poll
@@ -473,7 +510,24 @@ class LookupService(
         // and saves them the rest of the retry interval. Without this the article could sit
         // finished on the server for most of five seconds before anybody was told.
         val grace = if (startedHere) ANNOTATION_GRACE_MS else POLL_GRACE_MS
-        val outcome = withTimeoutOrNull(grace) { job.await() }
+
+        // Whichever of the two finishes first.
+        //
+        // ⚠️ The race is only run while there is nothing to show. Once a draft has landed — or a
+        // previous article stands in for one — the wait is for the real article alone: an
+        // already-completed draft would win the race instantly, and every poll would return the
+        // same article it just returned, turning long polling back into a spin loop.
+        var draftEntry = draftArticles.getIfPresent(cacheKey)
+        val racing = draftJob != null && draftEntry == null && superseded == null
+        val outcome = withTimeoutOrNull(grace) {
+            if (!racing) job.await()
+            else kotlinx.coroutines.selects.select<AnnotationOutcome?> {
+                job.onAwait { it }
+                // The draft won. Null falls through to the PENDING branch, which serves it.
+                draftJob!!.onAwait { draft -> draftEntry = draft; null }
+            }
+        }
+        if (outcome == null && draftEntry == null) draftEntry = draftArticles.getIfPresent(cacheKey)
 
         return when {
             // Still being written. PENDING keeps the clients polling, so the fresh article
@@ -481,11 +535,18 @@ class LookupService(
             outcome == null -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = superseded?.entry,
+                entry = superseded?.entry ?: draftEntry,
                 annotationStatus = AnnotationStatus.PENDING,
-                annotationNote = if (superseded != null) "superseded_article" else null,
+                annotationNote = when {
+                    superseded != null -> "superseded_article"
+                    draftEntry != null -> "draft_article"
+                    else -> null
+                },
                 // Come straight back: the next request waits on the server instead of on a timer.
-                retryAfterMs = if (startedHere) RETRY_AFTER_MS else POLL_RETRY_AFTER_MS,
+                // ⚠️ Including the very first one when a draft is coming — the five-second hint
+                // exists because an article takes minutes, and a draft takes seconds. Spending
+                // those seconds on a timer is spending the only thing this stage is buying.
+                retryAfterMs = if (startedHere && draftJob == null) RETRY_AFTER_MS else POLL_RETRY_AFTER_MS,
                 raw = if (superseded != null) supersededRaw else aggregate.response
             )
             // Same reasoning as the cached-degraded branch above: the previous article was
@@ -494,7 +555,7 @@ class LookupService(
             outcome.entry.degraded -> LookupResponse(
                 resolution = resolution,
                 notice = notice,
-                entry = superseded?.entry ?: outcome.entry,
+                entry = superseded?.entry ?: draftEntry ?: outcome.entry,
                 annotationStatus = AnnotationStatus.DEGRADED,
                 annotationNote = outcome.reason,
                 raw = if (superseded != null) supersededRaw else (outcome.raw ?: aggregate.response)
@@ -510,19 +571,84 @@ class LookupService(
     }
 
     /**
+     * Starts (or joins) the draft for this lookup.
+     *
+     * Deliberately built from the *quick* aggregate the response already carries: the scrapers
+     * are half of what a cold word waits for, and a draft that waited for them would arrive at
+     * roughly the same time as the article it exists to precede.
+     *
+     * A draft that fails is a non-event. The reader keeps the raw definitions they already have
+     * and the real article is unaffected, so nothing here propagates an error outwards.
+     */
+    private fun startDraft(
+        cacheKey: String,
+        lemma: String,
+        surface: String,
+        kind: LexicalKind,
+        aggregate: AggregatedWord
+    ): Deferred<LexicalEntry?> = draftInFlight.computeIfAbsent(cacheKey) {
+        scope.async {
+            val started = System.currentTimeMillis()
+            try {
+                val result = withTimeoutOrNull(DRAFT_DEADLINE_MS) {
+                    annotationService.annotate(
+                        lemma, surface, kind, aggregate,
+                        profile = n.startapp.services.lexical.AnnotationProfile.DRAFT
+                    )
+                }
+                val entry = result?.entry?.takeIf { !it.degraded && it.posGroups.isNotEmpty() }
+                val elapsed = System.currentTimeMillis() - started
+                if (entry == null) {
+                    logger.info(
+                        "Draft '{}' produced nothing usable in {}ms ({})",
+                        lemma, elapsed, result?.reason ?: "deadline"
+                    )
+                } else {
+                    draftArticles.put(cacheKey, entry)
+                    logger.info(
+                        "Draft '{}' ready in {}ms on {}: {} group(s), {} sense(s)",
+                        lemma, elapsed, EnvConfig.aiModelDraft,
+                        entry.posGroups.size, entry.posGroups.sumOf { it.senses.size }
+                    )
+                }
+                entry
+            } catch (e: Exception) {
+                logger.warn("Draft for '{}' failed: {}", lemma, e.message)
+                null
+            } finally {
+                draftInFlight.remove(cacheKey)
+            }
+        }
+    }
+
+    /**
      * Runs annotation synchronously and reports exactly what happened. Admin-only: the detail
      * carries provider error text, which has no business in a public response.
      */
-    suspend fun diagnose(query: String): Map<String, String> {
+    /**
+     * @param draft measure the fast stage instead of the real one — same word, same fragments,
+     *   the model and budget a cold lookup would actually give it. Without this the only way to
+     *   know whether "ten seconds" holds on this deployment is to watch a log.
+     */
+    suspend fun diagnose(query: String, draft: Boolean = false): Map<String, String> {
         val resolution = queryResolver.resolve(query)
         val lemma = resolution.lemma ?: return mapOf("error" to "query resolved to no lemma")
         val kind = kindFor(resolution)
-        val aggregate = aggregationService.aggregateDetailed(lemma, skipScrapers = true)
+        val aggregateStarted = System.currentTimeMillis()
+        val aggregate = aggregationService.aggregateDetailed(lemma, skipScrapers = true, urgent = draft)
+        val aggregateMs = System.currentTimeMillis() - aggregateStarted
         val started = System.currentTimeMillis()
-        val result = annotationService.annotate(lemma, resolution.surface, kind, aggregate)
+        val result = annotationService.annotate(
+            lemma, resolution.surface, kind, aggregate,
+            profile = if (draft) n.startapp.services.lexical.AnnotationProfile.DRAFT
+            else n.startapp.services.lexical.AnnotationProfile.FULL
+        )
         return mapOf(
             "lemma" to lemma,
-            "model" to EnvConfig.aiModel,
+            "stage" to if (draft) "draft" else "full",
+            "aggregateMs" to aggregateMs.toString(),
+            "senses" to result.entry.posGroups.sumOf { it.senses.size }.toString(),
+            "model" to if (draft) EnvConfig.aiModelDraft else EnvConfig.aiModel,
             "endpoint" to llmEndpoint,
             "structuredMode" to n.startapp.services.ai.AiCompat.structuredMode("primary").name,
             "tokenParam" to n.startapp.services.ai.AiCompat.tokenParam("primary"),
@@ -754,6 +880,8 @@ class LookupService(
     suspend fun invalidate(lemma: String): Int {
         val normalized = lemma.trim().lowercase()
         hot.asMap().keys.filter { it.contains("|$normalized|") }.forEach { hot.invalidate(it) }
+        draftArticles.asMap().keys.filter { it.contains("|$normalized|") }
+            .forEach { draftArticles.invalidate(it) }
         val removed = repository.deleteByLemma(normalized)
         logger.info("Invalidated {} lexical entr(ies) for '{}'", removed, normalized)
         return removed

@@ -77,6 +77,34 @@ object LexicalPromptBuilder {
     const val MAX_FRAGMENTS_PER_SOURCE = 12
     const val MAX_FRAGMENTS_TOTAL = 40
 
+    /**
+     * The same for a draft, where the budget is seconds rather than tokens.
+     *
+     * Cut hard: reading forty fragments is time on the wire before a single word is written,
+     * and the draft is replaced within the minute by an article that reads all of them.
+     */
+    const val MAX_FRAGMENTS_DRAFT = 10
+
+    /**
+     * Appended to the user prompt for a draft.
+     *
+     * Everything here trades completeness for latency, and each line is a thing the reader will
+     * get anyway a minute later: fewer senses, one example, no apparatus. What it does **not**
+     * relax is the grounding — a draft with invented senses would be a worse article, not a
+     * faster one.
+     */
+    val DRAFT_BRIEF = """
+        ЭТО БЫСТРЫЙ ЧЕРНОВИК: его показывают человеку, пока пишется полная статья.
+        Он ценен ровно тем, что приходит за секунды, а время здесь — это написанные слова:
+        - всего не больше 4 значений, и не больше 2 на одну часть речи — самые частотные;
+          части речи не терять: лучше по одному значению на каждую, чем все на одну;
+        - definitionEn — до 12 слов; definitionRu — до 12 слов, одним предложением;
+        - ровно 1 короткий пример на значение;
+        - collocations, synonyms, antonyms, domain, usageNote — пустые массивы / null;
+        - etymology, usageNotes, frequencyBand — null / [].
+        Остальные правила прежние: русский естественный, sourceRefs честные, ничего не выдумывать.
+    """.trimIndent()
+
     private val SYSTEM_GROUNDED = """
         Ты — лексикограф, который составляет англо-русскую словарную статью для русскоязычных
         изучающих английский язык. Отвечай строго в формате JSON по заданной схеме.

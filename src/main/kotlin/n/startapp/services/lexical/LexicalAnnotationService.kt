@@ -12,6 +12,7 @@ import n.startapp.models.lexical.LexicalKind
 import n.startapp.models.lexical.SourceRef
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.LlmJson
+import n.startapp.services.ai.LlmModelTier
 import n.startapp.services.ai.LlmRequest
 import n.startapp.services.ai.LlmRoute
 import n.startapp.services.ai.LlmUsage
@@ -19,6 +20,15 @@ import n.startapp.services.ai.ResponseFormat
 import n.startapp.services.dictionary.AggregatedWord
 import n.startapp.utils.EnvConfig
 import org.slf4j.LoggerFactory
+
+/**
+ * How much article to ask the model for.
+ *
+ * [DRAFT] is the same pipeline — same schema, same validator, same grounding rules — asked for a
+ * smaller article on a faster model, so a reader has something to read within seconds. It differs
+ * only in what it can afford: fewer fragments, fewer senses, one attempt, no repair round.
+ */
+enum class AnnotationProfile { FULL, DRAFT }
 
 /**
  * Converts the noisy multi-source aggregate into one structured, grounded [LexicalEntry].
@@ -85,15 +95,34 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         kind: LexicalKind,
         aggregate: AggregatedWord,
         /** BULK keeps a warm-up run on the reserve pool, away from the user-facing quota. */
-        route: LlmRoute = LlmRoute.LIVE
+        route: LlmRoute = LlmRoute.LIVE,
+        profile: AnnotationProfile = AnnotationProfile.FULL
     ): AnnotationResult {
+        // ⚠️ Trimmed *after* [selectFragments], which renumbers: the indices a sense may cite
+        // have to stay contiguous from 1, or the validator drops grounding the model did have.
         val sources = buildSources(aggregate.sourceDefinitions)
+            .let {
+                if (profile == AnnotationProfile.DRAFT) it.take(LexicalPromptBuilder.MAX_FRAGMENTS_DRAFT)
+                else it
+            }
         val partsOfSpeech = LexicalPromptBuilder.partsOfSpeech(sources)
 
-        return if (PosGroupMerge.shouldSplitByPartOfSpeech(lemma, kind, partsOfSpeech)) {
-            annotateByPartOfSpeech(lemma, queryForm, kind, aggregate, sources, partsOfSpeech, route)
+        // ⚠️ A draft is never split by part of speech, and the reason is not only latency.
+        // Splitting judges each section on its own, so `lead`'s verb section — where the model
+        // leaned on its own knowledge more than on the fragments — was rejected wholesale for
+        // ignoring its sources, and the draft came back a homograph with one half missing. The
+        // same senses inside one article are a minority of it and survive. One call is also one
+        // chance to trip a gateway timeout instead of four, and with the sections capped at three
+        // senses there is little for the fan-out to win back.
+        return if (profile == AnnotationProfile.FULL &&
+            PosGroupMerge.shouldSplitByPartOfSpeech(lemma, kind, partsOfSpeech)
+        ) {
+            annotateByPartOfSpeech(lemma, queryForm, kind, aggregate, sources, partsOfSpeech, route, profile)
         } else {
-            annotateWhole(lemma, queryForm, kind, aggregate, sources, onlyPos = null, route = route)
+            annotateWhole(
+                lemma, queryForm, kind, aggregate, sources,
+                onlyPos = null, route = route, profile = profile
+            )
         }
     }
 
@@ -105,7 +134,8 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         aggregate: AggregatedWord,
         sources: List<SourceRef>,
         partsOfSpeech: List<String>,
-        route: LlmRoute
+        route: LlmRoute,
+        profile: AnnotationProfile
     ): AnnotationResult = coroutineScope {
         // Capped so a word with many parts of speech cannot fan out into a rate limit.
         val targets = partsOfSpeech.take(MAX_PARALLEL_POS)
@@ -116,6 +146,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
                     lemma, queryForm, kind, aggregate, sources,
                     onlyPos = pos,
                     route = route,
+                    profile = profile,
                     // Etymology and usage notes belong to the word, not to a section: asking
                     // every call for them would duplicate the answer and the tokens.
                     includeEntryLevel = index == 0
@@ -172,6 +203,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         sources: List<SourceRef>,
         onlyPos: String?,
         route: LlmRoute = LlmRoute.LIVE,
+        profile: AnnotationProfile = AnnotationProfile.FULL,
         includeEntryLevel: Boolean = true
     ): AnnotationResult {
         val raw = aggregate.response
@@ -187,14 +219,19 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             antonyms = raw.antonyms,
             onlyPos = onlyPos,
             includeEntryLevel = includeEntryLevel
-        )
+        ).let {
+            if (profile == AnnotationProfile.DRAFT) it + "\n\n" + LexicalPromptBuilder.DRAFT_BRIEF else it
+        }
 
         var user = baseUser
         var lastIssues = emptyList<String>()
         var lastCode = "validation_failed"
 
-        repeat(2) { attempt ->
-            when (val outcome = attemptAnnotation(system, user, onlyPos, route, sources, lemma, queryForm, kind, aggregate, grounded)) {
+        // A draft gets one shot. The repair round is the right trade for an article that will be
+        // stored forever and the wrong one for a stand-in: a second call costs more seconds than
+        // the whole stage is allowed, and the article that replaces it is already on its way.
+        repeat(if (profile == AnnotationProfile.DRAFT) 1 else 2) { attempt ->
+            when (val outcome = attemptAnnotation(system, user, onlyPos, route, profile, sources, lemma, queryForm, kind, aggregate, grounded)) {
                 is AttemptResult.Success -> return AnnotationResult(outcome.entry, outcome.usage)
                 is AttemptResult.Retry -> {
                     logger.warn(
@@ -255,6 +292,7 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         user: String,
         onlyPos: String?,
         route: LlmRoute,
+        profile: AnnotationProfile,
         sources: List<SourceRef>,
         lemma: String,
         queryForm: String,
@@ -262,24 +300,37 @@ class LexicalAnnotationService(private val llm: LlmClient) {
         aggregate: AggregatedWord,
         grounded: Boolean
     ): AttemptResult {
+        val isDraft = profile == AnnotationProfile.DRAFT
         val result = try {
             llm.complete(
                 LlmRequest(
-                    task = "annotate",
+                    task = if (isDraft) "annotate_draft" else "annotate",
                     system = system,
                     user = user,
+                    tier = if (isDraft) LlmModelTier.DRAFT else LlmModelTier.STRONG,
                     // Sized for a whole article; a single part-of-speech section needs far
                     // less, and the client grants one larger budget if the ceiling is hit
                     // anyway — a truncated JSON can never parse, so retrying it is pointless.
-                    maxTokens = if (onlyPos != null) 2500 else 4500,
+                    // A draft is capped tighter still: tokens written are seconds waited, and
+                    // the brief asks for three senses rather than everything the sources have.
+                    maxTokens = when {
+                        isDraft && onlyPos != null -> 1400
+                        isDraft -> 2200
+                        onlyPos != null -> 2500
+                        else -> 4500
+                    },
                     temperature = 0.2,
                     responseFormat = ResponseFormat.JsonSchema(
                         name = LEXICAL_ENTRY_SCHEMA_NAME,
                         schema = LEXICAL_ENTRY_JSON_SCHEMA
                     ),
                     // Annotation runs in the background, so it can afford to wait out a
-                    // rate limit rather than degrade the article.
-                    maxRetries = 3,
+                    // rate limit rather than degrade the article. A draft cannot, and gets no
+                    // retry at all: the provider's own backoff is five seconds, which is most
+                    // of the window in which a draft is worth anything — a retry would spend
+                    // the reader's wait to deliver something arriving too late to matter. It
+                    // still spills over to the reserve pool, which costs nothing in time.
+                    maxRetries = if (isDraft) 0 else 3,
                     route = route
                 )
             )
@@ -322,8 +373,9 @@ class LexicalAnnotationService(private val llm: LlmClient) {
             sources = sources,
             aiGenerated = !grounded,
             degraded = false,
+            draft = isDraft,
             promptVersion = LexicalPromptBuilder.PROMPT_VERSION,
-            model = EnvConfig.aiModel,
+            model = if (isDraft) EnvConfig.aiModelDraft else EnvConfig.aiModel,
             generatedAt = System.currentTimeMillis()
         )
         return AttemptResult.Success(PronunciationBinding.bind(entry, aggregate), result.usage)

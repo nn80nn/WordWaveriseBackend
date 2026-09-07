@@ -14,7 +14,9 @@ data class LlmProvider(
     val baseUrl: String,
     val apiKey: String,
     val model: String,
-    val fastModel: String
+    val fastModel: String,
+    /** Writes the draft article. Blank falls through to [fastModel] and then to [model]. */
+    val draftModel: String = ""
 ) {
     val isConfigured: Boolean get() = baseUrl.isNotBlank() && apiKey.isNotBlank()
 
@@ -35,8 +37,11 @@ data class LlmProvider(
             return "$raw/v1/chat/completions"
         }
 
-    fun modelFor(tier: LlmModelTier): String =
-        if (tier == LlmModelTier.FAST) fastModel.ifBlank { model } else model
+    fun modelFor(tier: LlmModelTier): String = when (tier) {
+        LlmModelTier.STRONG -> model
+        LlmModelTier.FAST -> fastModel.ifBlank { model }
+        LlmModelTier.DRAFT -> draftModel.ifBlank { fastModel.ifBlank { model } }
+    }
 
     companion object {
         /** Serves user-facing requests. */
@@ -45,7 +50,8 @@ data class LlmProvider(
             baseUrl = EnvConfig.aiDomen,
             apiKey = EnvConfig.aiApiKey,
             model = EnvConfig.aiModel,
-            fastModel = EnvConfig.aiModelFast
+            fastModel = EnvConfig.aiModelFast,
+            draftModel = EnvConfig.aiModelDraft
         )
 
         /**
