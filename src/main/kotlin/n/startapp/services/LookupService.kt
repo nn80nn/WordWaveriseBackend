@@ -113,7 +113,22 @@ class LookupService(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight = ConcurrentHashMap<String, Deferred<AnnotationOutcome>>()
-    private val draftInFlight = ConcurrentHashMap<String, Deferred<LexicalEntry?>>()
+    /**
+     * The draft job for a lookup — kept **after** it finishes, unlike [inFlight].
+     *
+     * ⚠️ Removing it on completion looked symmetric and was a token leak: a draft that produced
+     * nothing leaves no cache entry either, so the next poll — one second later — found no job,
+     * started another, and a single cold word ordered a fresh draft every second for as long as
+     * the real article took. The finished job is the record that this word has already had its
+     * one attempt.
+     *
+     * Expires on its own rather than being deleted, so a word looked up again much later gets a
+     * new chance without the map growing without bound.
+     */
+    private val draftInFlight = Caffeine.newBuilder()
+        .expireAfterWrite(15, TimeUnit.MINUTES)
+        .maximumSize(500)
+        .build<String, Deferred<LexicalEntry?>>()
 
     /**
      * Draft articles, held only for as long as the real one takes to write.
@@ -518,7 +533,12 @@ class LookupService(
         // already-completed draft would win the race instantly, and every poll would return the
         // same article it just returned, turning long polling back into a spin loop.
         var draftEntry = draftArticles.getIfPresent(cacheKey)
-        val racing = draftJob != null && draftEntry == null && superseded == null
+        // ⚠️ `isCompleted` and not merely "no draft yet": a job that finished with nothing is
+        // finished, and racing an already-completed Deferred returns instantly — every poll
+        // would answer in milliseconds and come straight back, which is a spin loop wearing
+        // long polling's clothes.
+        val racing = draftJob != null && !draftJob.isCompleted &&
+            draftEntry == null && superseded == null
         val outcome = withTimeoutOrNull(grace) {
             if (!racing) job.await()
             else kotlinx.coroutines.selects.select<AnnotationOutcome?> {
@@ -586,7 +606,7 @@ class LookupService(
         surface: String,
         kind: LexicalKind,
         aggregate: AggregatedWord
-    ): Deferred<LexicalEntry?> = draftInFlight.computeIfAbsent(cacheKey) {
+    ): Deferred<LexicalEntry?> = draftInFlight.get(cacheKey) {
         scope.async {
             val started = System.currentTimeMillis()
             try {
@@ -615,8 +635,6 @@ class LookupService(
             } catch (e: Exception) {
                 logger.warn("Draft for '{}' failed: {}", lemma, e.message)
                 null
-            } finally {
-                draftInFlight.remove(cacheKey)
             }
         }
     }
