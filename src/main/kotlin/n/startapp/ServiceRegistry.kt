@@ -1,5 +1,6 @@
 package n.startapp
 
+import n.startapp.repositories.BookRepository
 import n.startapp.repositories.LexicalEntryRepository
 import n.startapp.repositories.LlmCacheRepository
 import n.startapp.services.AiService
@@ -16,6 +17,7 @@ import n.startapp.services.lexical.LexicalAnnotationService
 import n.startapp.services.query.DataMuseWordOracle
 import n.startapp.services.query.QueryResolver
 import n.startapp.services.query.RuEnTranslationService
+import n.startapp.services.reader.BookImportService
 import n.startapp.services.warmup.WarmupService
 import kotlinx.coroutines.launch
 import n.startapp.utils.EnvConfig
@@ -68,6 +70,11 @@ class ServiceRegistry {
     )
 
     val contextAnalysisService = ContextAnalysisService(llmClient, lexicalEntryRepository, llmCacheRepository)
+
+    // The reader. Holds no client of its own: importing is parsing bytes that already arrived,
+    // and a tap goes to the context analysis above, which is where the model already lives.
+    val bookRepository = BookRepository()
+    val bookImportService = BookImportService(bookRepository)
 
     val lookupService = LookupService(
         aggregationService = aggregationService,

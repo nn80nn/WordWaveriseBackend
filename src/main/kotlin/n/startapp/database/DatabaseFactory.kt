@@ -5,6 +5,9 @@ import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
 import n.startapp.database.tables.AppSettings
 import n.startapp.database.tables.Assignments
+import n.startapp.database.tables.BookBlocks
+import n.startapp.database.tables.BookChapters
+import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ContentReports
 import n.startapp.database.tables.Flashcards
@@ -12,6 +15,7 @@ import n.startapp.database.tables.LexicalEntries
 import n.startapp.database.tables.LlmCache
 import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.PushSubscriptions
+import n.startapp.database.tables.ReadingPositions
 import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.ScraperCache
@@ -44,7 +48,8 @@ object DatabaseFactory {
         Users, Categories, SavedWords, SavedWordCategories, Flashcards, ScraperCache, TestingRequests,
         LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
         StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts,
-        ContentReports
+        ContentReports,
+        Books, BookChapters, BookBlocks, ReadingPositions
     )
 
     fun init() {

@@ -26,6 +26,7 @@ import n.startapp.routes.exerciseRoutes
 import n.startapp.routes.flashcardRoutes
 import n.startapp.routes.groupInviteRoutes
 import n.startapp.routes.groupRoutes
+import n.startapp.routes.libraryRoutes
 import n.startapp.routes.contextRoutes
 import n.startapp.routes.lookupRoutes
 import n.startapp.routes.pushRoutes
@@ -139,6 +140,10 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // Word-in-sentence analysis
         contextRoutes(services.contextAnalysisService)
+
+        // The reader's library. A tap inside a book goes to contextRoutes above — the reader
+        // brings the text, the dictionary already knows how to explain one word inside it.
+        libraryRoutes(services.bookRepository, services.bookImportService)
 
         // Cache management endpoints
         route("/api/cache") {

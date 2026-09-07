@@ -2,11 +2,15 @@ package n.startapp.services
 
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Assignments
+import n.startapp.database.tables.BookBlocks
+import n.startapp.database.tables.BookChapters
+import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ContentReports
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.PracticeAttempts
 import n.startapp.database.tables.PushSubscriptions
+import n.startapp.database.tables.ReadingPositions
 import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
 import n.startapp.database.tables.StudyGroupFolders
@@ -89,6 +93,23 @@ class AccountDeletionService {
                 it[PracticeAttempts.categoryId] = null
             }
             StudyGroupFolders.deleteWhere { StudyGroupFolders.categoryId inList ownedCategories }
+        }
+
+        // ── The reader's library ──
+        // Deleted outright rather than unlinked: a book here is text this person uploaded for
+        // themselves, nobody else can reach it, and it is the one thing in the account that is
+        // wholly theirs. ⚠️ Positions first — a reading position points at both the user and
+        // the book, so either order that leaves it standing makes the account undeletable.
+        val ownedBooks = Books
+            .select(Books.id)
+            .where { Books.userId eq userId }
+            .map { it[Books.id] }
+        ReadingPositions.deleteWhere { ReadingPositions.userId eq userId }
+        if (ownedBooks.isNotEmpty()) {
+            ReadingPositions.deleteWhere { ReadingPositions.bookId inList ownedBooks }
+            BookBlocks.deleteWhere { BookBlocks.bookId inList ownedBooks }
+            BookChapters.deleteWhere { BookChapters.bookId inList ownedBooks }
+            Books.deleteWhere { Books.userId eq userId }
         }
 
         // ── The account's own rows ──
