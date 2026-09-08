@@ -100,6 +100,23 @@ data class BlockPageDTO(
  * thing to do — a new phone, a lost download — and the right answer is the book you already
  * have, still open at the page you left it on, rather than a second copy at page one.
  */
+/**
+ * Место, которое читатель отметил сам.
+ *
+ * [preview] — начало отмеченного абзаца: список закладок без него это список чисел, по которому
+ * невозможно узнать ни одно из отмеченных мест.
+ */
+@Serializable
+data class BookmarkDTO(
+    val ordinal: Int,
+    val chapterIndex: Int,
+    val preview: String,
+    val createdAt: String
+)
+
+@Serializable
+data class SetBookmarkRequest(val ordinal: Int)
+
 @Serializable
 data class ImportResultDTO(
     val book: BookDTO,

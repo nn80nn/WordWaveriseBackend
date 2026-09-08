@@ -15,6 +15,7 @@ import n.startapp.exceptions.NotFoundException
 import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
 import n.startapp.models.reader.ImportTextRequest
+import n.startapp.models.reader.SetBookmarkRequest
 import n.startapp.models.reader.SetPositionRequest
 import n.startapp.repositories.BookRepository
 import n.startapp.repositories.CategoryRepository
@@ -148,6 +149,38 @@ fun Route.libraryRoutes(repository: BookRepository, importService: BookImportSer
                 val folder = categories.folderForBook(userId, bookId)
                     ?: throw NotFoundException("Книга не найдена")
                 call.respond(ApiResponse.success(folder))
+            }
+
+            /**
+             * Закладки — «сюда я хочу вернуться», в отличие от позиции, которая отвечает
+             * «где я сейчас». Их сколько угодно, и переписывать друг друга они не должны.
+             */
+            get("/{id}/bookmarks") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                val marks = repository.bookmarks(userId, bookId)
+                    ?: throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(marks))
+            }
+
+            post("/{id}/bookmarks") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                val request = call.receive<SetBookmarkRequest>()
+                val mark = repository.addBookmark(userId, bookId, request.ordinal)
+                    ?: throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(mark))
+            }
+
+            delete("/{id}/bookmarks/{ordinal}") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                val ordinal = call.parameters["ordinal"]?.toIntOrNull()
+                    ?: throw BadRequestException("Invalid ordinal")
+                if (!repository.removeBookmark(userId, bookId, ordinal)) {
+                    throw NotFoundException("Закладка не найдена")
+                }
+                call.respond(ApiResponse.success("Закладка убрана"))
             }
 
             delete("/{id}") {

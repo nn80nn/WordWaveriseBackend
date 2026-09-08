@@ -4,6 +4,7 @@ import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookChapters
+import n.startapp.database.tables.BookBookmarks
 import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ContentReports
@@ -105,7 +106,11 @@ class AccountDeletionService {
             .where { Books.userId eq userId }
             .map { it[Books.id] }
         ReadingPositions.deleteWhere { ReadingPositions.userId eq userId }
+        // Закладки называют и читателя, и книгу — как позиция чтения, и по той же причине
+        // снимаются раньше обеих.
+        BookBookmarks.deleteWhere { BookBookmarks.userId eq userId }
         if (ownedBooks.isNotEmpty()) {
+            BookBookmarks.deleteWhere { BookBookmarks.bookId inList ownedBooks }
             ReadingPositions.deleteWhere { ReadingPositions.bookId inList ownedBooks }
             BookBlocks.deleteWhere { BookBlocks.bookId inList ownedBooks }
             BookChapters.deleteWhere { BookChapters.bookId inList ownedBooks }

@@ -3,6 +3,7 @@ package n.startapp.repositories
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookChapters
+import n.startapp.database.tables.BookBookmarks
 import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ReadingPositions
@@ -11,6 +12,7 @@ import n.startapp.models.reader.BlockKind
 import n.startapp.models.reader.BlockPageDTO
 import n.startapp.models.reader.BookDTO
 import n.startapp.models.reader.BookDetailDTO
+import n.startapp.models.reader.BookmarkDTO
 import n.startapp.models.reader.ChapterDTO
 import n.startapp.models.reader.ReadingPositionDTO
 import n.startapp.services.context.Tokenizer
@@ -32,6 +34,9 @@ class BookRepository {
 
     /** How many blocks one request may carry. Beyond this the reader is prefetching, not reading. */
     private val maxPageSize = 200
+
+    /** Сколько символов абзаца показать в списке закладок. */
+    private val PREVIEW_CHARS = 90
 
     suspend fun findByHash(userId: Int, contentHash: String): BookDTO? = dbQuery {
         Books.selectAll()
@@ -194,6 +199,7 @@ class BookRepository {
         // created by `createMissingTablesAndColumns`, which does not add a cascade to a table
         // that already exists without one, so a database older than this file would refuse.
         ReadingPositions.deleteWhere { ReadingPositions.bookId eq bookId }
+        BookBookmarks.deleteWhere { BookBookmarks.bookId eq bookId }
         BookBlocks.deleteWhere { BookBlocks.bookId eq bookId }
         BookChapters.deleteWhere { BookChapters.bookId eq bookId }
         // ⚠️ The book's folder outlives the book, together with the words in it: those belong to
@@ -204,10 +210,75 @@ class BookRepository {
         true
     }
 
+    // ── Закладки ──────────────────────────────────────────────────────
+
+    /** Свежие сверху: закладку ставят, чтобы вернуться, а возвращаются обычно к последней. */
+    suspend fun bookmarks(userId: Int, bookId: Int): List<BookmarkDTO>? = dbQuery {
+        if (ownedRow(userId, bookId) == null) return@dbQuery null
+        BookBookmarks.selectAll()
+            .where { (BookBookmarks.userId eq userId) and (BookBookmarks.bookId eq bookId) }
+            .orderBy(BookBookmarks.createdAt to SortOrder.DESC)
+            .map { row -> bookmarkOf(bookId, row[BookBookmarks.ordinal], row[BookBookmarks.createdAt].toString()) }
+    }
+
+    /**
+     * Ставит закладку или возвращает уже стоящую.
+     *
+     * Идемпотентно: отметить одно и то же место дважды — это одна закладка, а не две, и человек,
+     * нажавший второй раз, ждёт именно этого.
+     */
+    suspend fun addBookmark(userId: Int, bookId: Int, ordinal: Int): BookmarkDTO? = dbQuery {
+        val row = ownedRow(userId, bookId) ?: return@dbQuery null
+        val clamped = ordinal.coerceIn(0, (row[Books.blockCount] - 1).coerceAtLeast(0))
+
+        val existing = BookBookmarks.selectAll()
+            .where {
+                (BookBookmarks.userId eq userId) and
+                    (BookBookmarks.bookId eq bookId) and
+                    (BookBookmarks.ordinal eq clamped)
+            }
+            .singleOrNull()
+        if (existing != null) {
+            return@dbQuery bookmarkOf(bookId, clamped, existing[BookBookmarks.createdAt].toString())
+        }
+
+        val now = Instant.now()
+        BookBookmarks.insert {
+            it[BookBookmarks.userId] = userId
+            it[BookBookmarks.bookId] = bookId
+            it[BookBookmarks.ordinal] = clamped
+            it[createdAt] = now
+        }
+        bookmarkOf(bookId, clamped, now.toString())
+    }
+
+    suspend fun removeBookmark(userId: Int, bookId: Int, ordinal: Int): Boolean = dbQuery {
+        BookBookmarks.deleteWhere {
+            (BookBookmarks.userId eq userId) and
+                (BookBookmarks.bookId eq bookId) and
+                (BookBookmarks.ordinal eq ordinal)
+        } > 0
+    }
+
+    /** Начало отмеченного абзаца — то, по чему закладку узнают в списке. */
+    private fun bookmarkOf(bookId: Int, ordinal: Int, createdAt: String): BookmarkDTO {
+        val block = BookBlocks.selectAll()
+            .where { (BookBlocks.bookId eq bookId) and (BookBlocks.ordinal eq ordinal) }
+            .singleOrNull()
+        val text = block?.get(BookBlocks.text).orEmpty().trim()
+        return BookmarkDTO(
+            ordinal = ordinal,
+            chapterIndex = block?.get(BookBlocks.chapterIndex) ?: 0,
+            preview = if (text.length <= PREVIEW_CHARS) text else text.take(PREVIEW_CHARS).trimEnd() + "…",
+            createdAt = createdAt
+        )
+    }
+
     /** Everything one reader owns, for account deletion. */
     suspend fun deleteAllFor(userId: Int) = dbQuery {
         val ids = Books.selectAll().where { Books.userId eq userId }.map { it[Books.id] }
         ReadingPositions.deleteWhere { ReadingPositions.userId eq userId }
+        BookBookmarks.deleteWhere { BookBookmarks.userId eq userId }
         for (bookId in ids) {
             ReadingPositions.deleteWhere { ReadingPositions.bookId eq bookId }
             BookBlocks.deleteWhere { BookBlocks.bookId eq bookId }

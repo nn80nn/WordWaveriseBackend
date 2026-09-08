@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import n.startapp.database.tables.AppSettings
 import n.startapp.database.tables.Assignments
 import n.startapp.database.tables.BookBlocks
+import n.startapp.database.tables.BookBookmarks
 import n.startapp.database.tables.BookChapters
 import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
@@ -49,7 +50,7 @@ object DatabaseFactory {
         LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
         StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts,
         ContentReports,
-        Books, BookChapters, BookBlocks, ReadingPositions
+        Books, BookChapters, BookBlocks, ReadingPositions, BookBookmarks
     )
 
     fun init() {
