@@ -29,6 +29,21 @@ fun Route.contextRoutes(service: ContextAnalysisService) {
             call.respond(ApiResponse.success(service.tokenize(request.text)))
         }
 
+        /**
+         * The fast one: what the word means here, in a couple of seconds.
+         *
+         * Same request shape as `/analyze`, deliberately — a client swaps one for the other
+         * without rebuilding anything. This is what a tap in the reader calls; the full analysis
+         * stays a second, explicit step, because nobody reading a page wants to wait ten seconds
+         * to learn one word.
+         */
+        post("/hint") {
+            val request = call.receive<ContextAnalyzeRequest>()
+            call.respond(
+                ApiResponse.success(service.hint(request.text, request.tokenIndex, request.token))
+            )
+        }
+
         post("/analyze") {
             val request = call.receive<ContextAnalyzeRequest>()
             call.respond(
