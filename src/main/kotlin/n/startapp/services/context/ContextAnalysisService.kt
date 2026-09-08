@@ -62,6 +62,21 @@ data class ContextHint(
     val senseMatched: Boolean = false,
     /** From the corpus, when a sense matched: free, exact, and not the model's to invent. */
     val senseDefinitionEn: String? = null,
+
+    /**
+     * The sense's other Russian equivalents — «вести, провожать, направлять».
+     *
+     * One word often does not fit the sentence the reader is looking at, and the neighbours are
+     * what make the meaning land. Comes from the corpus, so it costs nothing; the first item is
+     * dropped when it repeats [translationRu], which the model already answered.
+     */
+    val translationsRu: List<String> = emptyList(),
+
+    /** Пометы значения — все из корпуса, ни одна не спрашивается у модели. */
+    val cefr: String? = null,
+    val register: String? = null,
+    val countability: String? = null,
+
     val entryAvailable: Boolean = false
 )
 
@@ -107,6 +122,14 @@ class ContextAnalysisService(
 
         /** How far ahead of the runner-up a sense must be to count as the one that was meant. */
         private const val SENSE_MATCH_MARGIN = 0.2
+
+        /**
+         * Сколько соседних переводов показать рядом с основным.
+         *
+         * Три — потому что подсказка обязана читаться одним взглядом: весь ряд из статьи
+         * превращает её в статью, а её и так можно открыть одним нажатием.
+         */
+        private const val MAX_NEIGHBOUR_TRANSLATIONS = 3
 
         /**
          * Deliberately small. Every field the corpus can answer is left out of the reply: the
@@ -291,6 +314,16 @@ class ContextAnalysisService(
             senseId = sense?.id,
             senseMatched = sense != null,
             senseDefinitionEn = sense?.definitionEn?.takeIf { it.isNotBlank() },
+            // ⚠️ Ровно то же слово, что уже стоит заголовком, из ряда выбрасывается: перевод,
+            // повторённый под самим собой, читается как ошибка вёрстки, а не как синоним.
+            translationsRu = sense?.translationsRu
+                .orEmpty()
+                .filter { !it.equals(translation, ignoreCase = true) }
+                .take(MAX_NEIGHBOUR_TRANSLATIONS),
+            cefr = sense?.cefr?.takeIf { it.isNotBlank() },
+            register = sense?.register?.name?.takeIf { it != "NEUTRAL" },
+            // Свойство значения, а не слова: `paper`-материал неисчисляем, `paper`-документ нет.
+            countability = sense?.countability?.name,
             entryAvailable = entry != null
         )
     }
