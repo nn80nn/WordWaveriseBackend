@@ -7,8 +7,12 @@ import n.startapp.models.reader.ImportTextRequest
 import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookChapters
 import n.startapp.database.tables.Books
+import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ReadingPositions
+import n.startapp.database.tables.SavedWordCategories
+import n.startapp.database.tables.SavedWords
 import n.startapp.repositories.BookRepository
+import n.startapp.repositories.CategoryRepository
 import n.startapp.services.AccountDeletionService
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
@@ -31,6 +35,7 @@ class ReaderLibraryTest {
 
     private val books = BookRepository()
     private val import = BookImportService(books)
+    private val categories = CategoryRepository()
 
     private fun <T> onFreshDatabase(block: () -> T): T = TestDatabase.fresh("reader", block)
 
@@ -222,6 +227,113 @@ class ReaderLibraryTest {
             assertEquals(0, BookBlocks.selectAll().count().toInt())
             assertEquals(0, ReadingPositions.selectAll().count().toInt())
             assertEquals(0, Users.selectAll().count().toInt())
+        }
+    }
+
+    // ── The folder a book collects into ───────────────────────────────────
+
+    @Test
+    fun `a book opens exactly one folder, however often it is asked for`(): Unit = onFreshDatabase {
+        runBlocking {
+            val reader = user()
+            val book = import.importText(reader, ImportTextRequest(text = sample, title = "Notes")).book
+
+            // Nothing saved from it yet, so there is nothing to report.
+            assertNull(categories.findFolderForBook(reader, book.id))
+
+            val first = assertNotNull(categories.folderForBook(reader, book.id))
+            val second = assertNotNull(categories.folderForBook(reader, book.id))
+
+            // ⚠️ Two quick saves in a row must not open two folders called «Notes» — one book's
+            // words filed in two places with nothing to say which is the real one.
+            assertEquals(first.id, second.id)
+            assertEquals("Notes", first.name)
+            assertEquals(book.id, first.bookId)
+            assertEquals(1, transaction { Categories.selectAll().count().toInt() })
+        }
+    }
+
+    @Test
+    fun `a long title still fits the folder it names`(): Unit = onFreshDatabase {
+        runBlocking {
+            val reader = user()
+            val title = "Т".repeat(400)
+            val book = import.importText(reader, ImportTextRequest(text = sample, title = title)).book
+
+            // Books.title is varchar(500), Categories.name is varchar(100): without the trim the
+            // first long title fails the insert rather than the feature.
+            val folder = assertNotNull(categories.folderForBook(reader, book.id))
+            assertEquals(CategoryRepository.MAX_NAME_LENGTH, folder.name.length)
+        }
+    }
+
+    @Test
+    fun `deleting a book leaves its folder and its words standing`(): Unit = onFreshDatabase {
+        val reader: Int
+        val folderId: Int
+        runBlocking {
+            reader = user()
+            val book = import.importText(reader, ImportTextRequest(text = sample, title = "Notes")).book
+            folderId = assertNotNull(categories.folderForBook(reader, book.id)).id
+            fileWord(reader, folderId, "platform")
+
+            assertTrue(books.delete(reader, book.id))
+        }
+
+        transaction {
+            // The words belong to the person, not to the file they once uploaded. Only the marker
+            // goes — and it has to go first, or the delete fails on the foreign key.
+            val row = assertNotNull(
+                Categories.selectAll().where { Categories.id eq folderId }.singleOrNull()
+            )
+            assertNull(row[Categories.bookId])
+            assertEquals(1, SavedWordCategories.selectAll().count().toInt())
+            assertEquals(0, Books.selectAll().count().toInt())
+        }
+    }
+
+    @Test
+    fun `deleting the account takes the book and its folder together`(): Unit = onFreshDatabase {
+        runBlocking {
+            val reader = user()
+            val book = import.importText(reader, ImportTextRequest(text = sample, title = "Notes")).book
+            val folder = assertNotNull(categories.folderForBook(reader, book.id))
+            fileWord(reader, folder.id, "platform")
+
+            // ⚠️ Folders are purged after books, so the folder→book marker has to be cleared in
+            // between. Without that this line throws instead of forgetting anybody.
+            AccountDeletionService().purgeUser(reader)
+        }
+
+        transaction {
+            assertEquals(0, Books.selectAll().count().toInt())
+            assertEquals(0, Categories.selectAll().count().toInt())
+            assertEquals(0, Users.selectAll().count().toInt())
+        }
+    }
+
+    @Test
+    fun `one reader cannot open a folder on another reader's book`(): Unit = onFreshDatabase {
+        runBlocking {
+            val owner = user()
+            val stranger = user()
+            val book = import.importText(owner, ImportTextRequest(text = sample, title = "Notes")).book
+
+            assertNull(categories.folderForBook(stranger, book.id))
+            assertNull(categories.findFolderForBook(stranger, book.id))
+            assertEquals(0, transaction { Categories.selectAll().count().toInt() })
+        }
+    }
+
+    /** A saved word filed into [folderId], written directly: this is a test about cleanup. */
+    private fun fileWord(userId: Int, folderId: Int, word: String) = transaction {
+        val wordId = SavedWords.insert {
+            it[SavedWords.userId] = userId
+            it[SavedWords.word] = word
+        }[SavedWords.id]
+        SavedWordCategories.insert {
+            it[savedWordId] = wordId
+            it[categoryId] = folderId
         }
     }
 }

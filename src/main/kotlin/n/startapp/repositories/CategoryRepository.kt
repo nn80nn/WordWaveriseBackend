@@ -2,6 +2,7 @@ package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.Assignments
+import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.PracticeAttempts
@@ -20,12 +21,18 @@ data class SharedFolder(val id: Int, val ownerId: Int, val name: String)
 
 class CategoryRepository {
 
+    companion object {
+        /** `Categories.name` is varchar(100); a book title may be five times that. */
+        const val MAX_NAME_LENGTH = 100
+    }
+
     private fun rowToDTO(row: ResultRow) = CategoryDTO(
         id = row[Categories.id],
         name = row[Categories.name],
         color = row[Categories.color],
         wordCount = 0,
-        parentId = row[Categories.parentId]
+        parentId = row[Categories.parentId],
+        bookId = row[Categories.bookId]
     )
 
     suspend fun findByUserId(userId: Int): List<CategoryDTO> = dbQuery {
@@ -74,6 +81,74 @@ class CategoryRepository {
         }
         val id = stmt[Categories.id]
         CategoryDTO(id = id, name = name.trim(), color = color, wordCount = 0, parentId = parent)
+    }
+
+    // ── The folder a book collects into ───────────────────────────────────
+
+    /** The book's folder, or null when nothing has been saved from it yet. */
+    suspend fun findFolderForBook(userId: Int, bookId: Int): CategoryDTO? = dbQuery {
+        folderRowForBook(userId, bookId)?.let { withCount(rowToDTO(it)) }
+    }
+
+    /**
+     * The book's folder, created on the first word saved from it.
+     *
+     * ⚠️ Idempotent on purpose, and inside one transaction. Two quick saves in a row would
+     * otherwise open two folders called «The Hobbit», and one book's words would end up filed in
+     * two places with nothing to say which is the real one.
+     *
+     * Lazy rather than created at import, so a book somebody opened once and abandoned leaves no
+     * empty folder behind.
+     *
+     * @return null when the book is not this reader's — indistinguishable from it not existing.
+     */
+    suspend fun folderForBook(userId: Int, bookId: Int): CategoryDTO? = dbQuery {
+        val book = Books.selectAll()
+            .where { (Books.id eq bookId) and (Books.userId eq userId) }
+            .limit(1)
+            .firstOrNull()
+            ?: return@dbQuery null
+
+        folderRowForBook(userId, bookId)?.let { return@dbQuery withCount(rowToDTO(it)) }
+
+        // ⚠️ Categories.name is varchar(100) while Books.title is varchar(500): without the trim
+        // the first long title fails the insert rather than the feature.
+        val name = book[Books.title].trim().take(MAX_NAME_LENGTH).ifBlank { "Книга" }
+        val stmt = Categories.insert {
+            it[Categories.userId] = userId
+            it[Categories.name] = name
+            it[Categories.color] = null
+            it[Categories.parentId] = null
+            it[Categories.bookId] = bookId
+        }
+        CategoryDTO(
+            id = stmt[Categories.id],
+            name = name,
+            color = null,
+            wordCount = 0,
+            parentId = null,
+            bookId = bookId
+        )
+    }
+
+    private fun folderRowForBook(userId: Int, bookId: Int): ResultRow? =
+        Categories.selectAll()
+            .where { (Categories.userId eq userId) and (Categories.bookId eq bookId) }
+            .orderBy(Categories.createdAt to SortOrder.ASC)
+            .limit(1)
+            .firstOrNull()
+
+    /** Fills in the word count for a single folder, so an existing one is not reported as empty. */
+    private fun withCount(folder: CategoryDTO): CategoryDTO {
+        val filed = SavedWordCategories.savedWordId.count()
+        val count = SavedWordCategories
+            .select(filed)
+            .where { SavedWordCategories.categoryId eq folder.id }
+            .firstOrNull()
+            ?.get(filed)
+            ?.toInt()
+            ?: 0
+        return folder.copy(wordCount = count)
     }
 
     // ── Groups of folders ─────────────────────────────────────────────────

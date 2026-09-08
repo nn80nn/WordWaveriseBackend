@@ -109,6 +109,12 @@ class AccountDeletionService {
             ReadingPositions.deleteWhere { ReadingPositions.bookId inList ownedBooks }
             BookBlocks.deleteWhere { BookBlocks.bookId inList ownedBooks }
             BookChapters.deleteWhere { BookChapters.bookId inList ownedBooks }
+            // ⚠️ Folders are deleted further down, i.e. *after* the books they may point at.
+            // The marker has to be cleared here or the whole purge fails on the foreign key —
+            // on the one path where somebody who asked to be forgotten has nowhere left to go.
+            Categories.update({ Categories.bookId inList ownedBooks }) {
+                it[Categories.bookId] = null
+            }
             Books.deleteWhere { Books.userId eq userId }
         }
 

@@ -42,7 +42,15 @@ data class ResolvedFolder(
      * the module it sits in. Trimming that is [FolderCatalog]'s job, because only the finished
      * list knows what else the reader got.
      */
-    val parentId: Int? = null
+    val parentId: Int? = null,
+
+    /**
+     * The book this folder collects from, for the reader's own folders only.
+     *
+     * Left null on anything reached through a group: a book is a personal thing, and naming it
+     * would tell the student what the teacher happens to be reading.
+     */
+    val bookId: Int? = null
 ) {
     val readOnly: Boolean get() = role != FolderRole.OWNER
 }
@@ -93,7 +101,8 @@ class FolderAccessResolver {
                     groupName = null,
                     name = row[Categories.name],
                     color = row[Categories.color],
-                    parentId = row[Categories.parentId]
+                    parentId = row[Categories.parentId],
+                    bookId = row[Categories.bookId]
                 )
             }
 

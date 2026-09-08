@@ -26,6 +26,24 @@ object Categories : Table("categories") {
     val parentId = integer("parent_id").references(id).nullable()
 
     /**
+     * The book this folder collects words from, or null for an ordinary folder.
+     *
+     * A marker, not a naming convention: the icon and the "книги" filter ask the folder, and both
+     * the book's title and the folder's name are things a person may rename at any moment. Matching
+     * them by name would work until the first rename and then quietly stop.
+     *
+     * ⚠️ One folder per book is held by [n.startapp.repositories.CategoryRepository.folderForBook],
+     * not by an index: in Postgres NULL is not equal to NULL, so a unique index on
+     * `(user_id, book_id)` would guard only the case already under control and say nothing about
+     * ordinary folders.
+     *
+     * ⚠️ The reference points folder → book, so deleting a book must clear it first. The folder
+     * outlives the book together with the words in it — those belong to the person, not to the
+     * file they once uploaded.
+     */
+    val bookId = integer("book_id").references(Books.id).nullable()
+
+    /**
      * The link that lets anyone else copy this folder, or null while it is private.
      *
      * A capability, not an identifier: whoever holds it can read the folder and take a copy,

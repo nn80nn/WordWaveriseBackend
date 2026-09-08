@@ -17,6 +17,7 @@ import n.startapp.models.ApiResponse
 import n.startapp.models.reader.ImportTextRequest
 import n.startapp.models.reader.SetPositionRequest
 import n.startapp.repositories.BookRepository
+import n.startapp.repositories.CategoryRepository
 import n.startapp.services.reader.BookImportService
 
 /**
@@ -27,6 +28,7 @@ import n.startapp.services.reader.BookImportService
  * nobody else can reach it.
  */
 fun Route.libraryRoutes(repository: BookRepository, importService: BookImportService) {
+    val categories = CategoryRepository()
 
     authenticate("auth-jwt") {
         route("/api/v2/library/books") {
@@ -118,6 +120,34 @@ fun Route.libraryRoutes(repository: BookRepository, importService: BookImportSer
                 val position = repository.setPosition(userId, bookId, request.ordinal)
                     ?: throw NotFoundException("Книга не найдена")
                 call.respond(ApiResponse.success(position))
+            }
+
+            /**
+             * The folder this book's words are filed into, if it has one yet.
+             *
+             * Null rather than 404 for a book nobody has saved from: the folder's absence is the
+             * answer, and it is the answer for most books most of the time.
+             */
+            get("/{id}/folder") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                if (repository.detail(userId, bookId) == null) throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(categories.findFolderForBook(userId, bookId)))
+            }
+
+            /**
+             * The folder, created if this is the first word saved from the book.
+             *
+             * Idempotent: the reader taps a word, and the folder either exists already or comes
+             * into being — either way the caller gets the id it needs to file the word in one
+             * request, without a "does it exist" round trip that two quick taps would both lose.
+             */
+            post("/{id}/folder") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                val folder = categories.folderForBook(userId, bookId)
+                    ?: throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(folder))
             }
 
             delete("/{id}") {

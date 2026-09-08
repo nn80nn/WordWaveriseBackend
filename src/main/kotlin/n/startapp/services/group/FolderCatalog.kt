@@ -49,6 +49,7 @@ class FolderCatalog(
                 // назвать модуль значило бы и рассказать о его существовании, и заставить
                 // клиент рисовать ветку, которой у него нет.
                 parentId = folder.parentId?.takeIf { it in reachable },
+                bookId = folder.bookId,
                 groupId = folder.groupId,
                 groupName = folder.groupName,
                 readOnly = folder.readOnly

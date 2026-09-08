@@ -4,6 +4,7 @@ import n.startapp.database.DatabaseFactory.dbQuery
 import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookChapters
 import n.startapp.database.tables.Books
+import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ReadingPositions
 import n.startapp.models.reader.BlockDTO
 import n.startapp.models.reader.BlockKind
@@ -195,6 +196,10 @@ class BookRepository {
         ReadingPositions.deleteWhere { ReadingPositions.bookId eq bookId }
         BookBlocks.deleteWhere { BookBlocks.bookId eq bookId }
         BookChapters.deleteWhere { BookChapters.bookId eq bookId }
+        // ⚠️ The book's folder outlives the book, together with the words in it: those belong to
+        // the person, not to the file they once uploaded. Only the marker goes — and it has to go
+        // first, because the reference points folder → book and would otherwise refuse the delete.
+        Categories.update({ Categories.bookId eq bookId }) { it[Categories.bookId] = null }
         Books.deleteWhere { (Books.id eq bookId) and (Books.userId eq userId) }
         true
     }
@@ -207,6 +212,10 @@ class BookRepository {
             ReadingPositions.deleteWhere { ReadingPositions.bookId eq bookId }
             BookBlocks.deleteWhere { BookBlocks.bookId eq bookId }
             BookChapters.deleteWhere { BookChapters.bookId eq bookId }
+        }
+        // Same reason as in [delete]: the folder points at the book, so the marker goes first.
+        if (ids.isNotEmpty()) {
+            Categories.update({ Categories.bookId inList ids }) { it[Categories.bookId] = null }
         }
         Books.deleteWhere { Books.userId eq userId }
         Unit

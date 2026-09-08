@@ -33,6 +33,14 @@ data class CategoryDTO(
     val parentId: Int? = null,
 
     /**
+     * The book whose words this folder collects, or null for an ordinary folder.
+     *
+     * What the book icon and the «книги» filter read. Always null on a folder lent by a group:
+     * a book is a personal thing, and the teacher's folder reaches the student as a plain folder.
+     */
+    val bookId: Int? = null,
+
+    /**
      * Set when the folder reaches this reader through a group rather than being their own.
      *
      * The words stay the teacher's; the reader may study them and build cards from them, and
