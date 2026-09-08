@@ -100,10 +100,13 @@ class ContextAnalysisService(
 
     companion object {
         const val PROMPT_VERSION_CONTEXT = 2
-        const val PROMPT_VERSION_HINT = 1
+        const val PROMPT_VERSION_HINT = 2
 
         /** Word overlap above this counts as the same sense. */
         private const val SENSE_MATCH_THRESHOLD = 0.35
+
+        /** How far ahead of the runner-up a sense must be to count as the one that was meant. */
+        private const val SENSE_MATCH_MARGIN = 0.2
 
         /**
          * Deliberately small. Every field the corpus can answer is left out of the reply: the
@@ -298,6 +301,13 @@ class ContextAnalysisService(
      * A miss returns null and the hint is still shown: «что значит здесь» is useful on its own,
      * and pretending it belongs to a particular dictionary sense would put the wrong id on a
      * saved word for ever.
+     *
+     * ⚠️ A tie is a miss, not a coin toss. One Russian word covers several senses at once —
+     * «вести» is `lead` an organisation and `lead` a horse — so the top score alone says nothing
+     * about which of them was meant. Picking the first of two equals looks like an answer, reads
+     * as an answer, and files the reader's word under a meaning they never chose. The margin
+     * below is the whole guard, and lowering it trades a visible "no match" for an invisible
+     * wrong one.
      */
     private fun matchSenseByTranslation(entry: LexicalEntry, translation: String?, pos: String?): Sense? {
         val words = russianStems(translation ?: return null)
@@ -307,17 +317,20 @@ class ContextAnalysisService(
             .filter { pos == null || it.pos.equals(pos.trim(), ignoreCase = true) }
             .ifEmpty { entry.posGroups }
 
-        var best: Pair<Sense, Double>? = null
-        for (group in groups) {
-            for (sense in group.senses) {
+        val scored = groups
+            .flatMap { it.senses }
+            .mapNotNull { sense ->
                 val senseWords = sense.translationsRu.flatMap { russianStems(it) }.toSet()
-                if (senseWords.isEmpty()) continue
+                if (senseWords.isEmpty()) return@mapNotNull null
                 val overlap = words.intersect(senseWords).size.toDouble()
-                val score = overlap / minOf(words.size, senseWords.size)
-                if (best == null || score > best!!.second) best = sense to score
+                sense to overlap / minOf(words.size, senseWords.size)
             }
-        }
-        return best?.takeIf { it.second >= SENSE_MATCH_THRESHOLD }?.first
+            .sortedByDescending { it.second }
+
+        val best = scored.firstOrNull()?.takeIf { it.second >= SENSE_MATCH_THRESHOLD } ?: return null
+        val runnerUp = scored.getOrNull(1)?.second ?: 0.0
+        if (best.second - runnerUp < SENSE_MATCH_MARGIN) return null
+        return best.first
     }
 
     /**
