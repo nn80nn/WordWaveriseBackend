@@ -124,6 +124,14 @@ class ContextAnalysisService(
         private const val SENSE_MATCH_MARGIN = 0.2
 
         /**
+         * Сколько букв русского слова считается его началом.
+         *
+         * Пять — это «лошад» от «лошади» и «свинц» от «свинцовый»: достаточно, чтобы форма
+         * узнала свою словарную запись, и коротко настолько, чтобы окончание не мешало.
+         */
+        private const val STEM_LENGTH = 5
+
+        /**
          * Сколько соседних переводов показать рядом с основным.
          *
          * Три — потому что подсказка обязана читаться одним взглядом: весь ряд из статьи
@@ -343,8 +351,9 @@ class ContextAnalysisService(
      * wrong one.
      */
     private fun matchSenseByTranslation(entry: LexicalEntry, translation: String?, pos: String?): Sense? {
-        val words = russianStems(translation ?: return null)
-        if (words.isEmpty()) return null
+        val exact = russianWords(translation ?: return null)
+        val stems = russianStems(translation)
+        if (stems.isEmpty()) return null
 
         val groups = entry.posGroups
             .filter { pos == null || it.pos.equals(pos.trim(), ignoreCase = true) }
@@ -353,18 +362,44 @@ class ContextAnalysisService(
         val scored = groups
             .flatMap { it.senses }
             .mapNotNull { sense ->
-                val senseWords = sense.translationsRu.flatMap { russianStems(it) }.toSet()
-                if (senseWords.isEmpty()) return@mapNotNull null
-                val overlap = words.intersect(senseWords).size.toDouble()
-                sense to overlap / minOf(words.size, senseWords.size)
+                val senseStems = sense.translationsRu.flatMap { russianStems(it) }.toSet()
+                if (senseStems.isEmpty()) return@mapNotNull null
+                val senseExact = sense.translationsRu.flatMap { russianWords(it) }.toSet()
+                Triple(sense, overlap(exact, senseExact), overlap(stems, senseStems))
             }
+
+        /**
+         * ⚠️ Целое слово побеждает обрубок, и это не оптимизация.
+         *
+         * Обрубки сравнивают то, что осталось от разных слов: «лошадей» и «лошадка» дают одно
+         * и то же начало, и подсказка к «After the horses came Muriel» приезжала со значением
+         * «„лошадка“ — баскетбольная игра» — с пометами, с определением и с видом полной
+         * уверенности. Сохранённое из книги слово легло бы в словарь под этим смыслом навсегда.
+         * Поэтому сначала ищется совпадение по целым словам, и только если его нет ни у одного
+         * значения — по началам слов, где ничья по-прежнему считается промахом.
+         */
+        val byExact = scored.filter { it.second > 0.0 }
+        val ranked = (byExact.ifEmpty { scored })
+            .map { it.first to if (byExact.isNotEmpty()) it.second else it.third }
             .sortedByDescending { it.second }
 
-        val best = scored.firstOrNull()?.takeIf { it.second >= SENSE_MATCH_THRESHOLD } ?: return null
-        val runnerUp = scored.getOrNull(1)?.second ?: 0.0
+        val best = ranked.firstOrNull()?.takeIf { it.second >= SENSE_MATCH_THRESHOLD } ?: return null
+        val runnerUp = ranked.getOrNull(1)?.second ?: 0.0
         if (best.second - runnerUp < SENSE_MATCH_MARGIN) return null
         return best.first
     }
+
+    private fun overlap(words: Set<String>, senseWords: Set<String>): Double {
+        if (words.isEmpty() || senseWords.isEmpty()) return 0.0
+        return words.intersect(senseWords).size.toDouble() / minOf(words.size, senseWords.size)
+    }
+
+    /** Русские слова как они есть — «лошадь» это «лошадь», а не начало чего-то похожего. */
+    private fun russianWords(text: String): Set<String> =
+        text.lowercase().replace('ё', 'е')
+            .split(Regex("[^а-яё]+"))
+            .filter { it.length > 2 }
+            .toSet()
 
     /**
      * Russian words with the tail cut off.
@@ -373,13 +408,14 @@ class ContextAnalysisService(
      * dictionary form — «свинцовый». Comparing them literally matches almost nothing, so the
      * ending is dropped: crude, but it is the difference between a sense that matches and one
      * that never does.
+     *
+     * ⚠️ Отрезается **до одной длины**, а не «по два символа с конца». Прежнее правило делало
+     * длину обрубка зависимой от длины слова: «лошадь» давало «лоша», «лошадей» — «лошад», и
+     * форма одного и того же слова переставала совпадать сама с собой, зато совпадала с соседним
+     * словом той же длины. Ошибка при этом выглядела как уверенный ответ.
      */
     private fun russianStems(text: String): Set<String> =
-        text.lowercase()
-            .split(Regex("[^а-яё]+"))
-            .filter { it.length > 2 }
-            .map { it.take(maxOf(4, it.length - 2)) }
-            .toSet()
+        russianWords(text).map { it.take(STEM_LENGTH) }.toSet()
 
     private fun resolveTarget(tokenized: TokenizedText, index: Int?, token: String?): ContextTarget? {
         if (index != null) {

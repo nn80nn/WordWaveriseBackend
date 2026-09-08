@@ -113,6 +113,45 @@ class ContextHintMatchTest {
     }
 
     @Test
+    fun `a whole word beats a stem, so a plural does not land on a lookalike sense`() {
+        // Живой случай из книги: «After the horses came Muriel» → «лошадей». Обрубки «лошадей»
+        // и «лошадка» совпадали, и подсказка приезжала со значением «„лошадка“ —
+        // баскетбольная игра»: с пометами, с определением и с видом полной уверенности.
+        val article = entry(
+            PosGroup(
+                pos = "noun",
+                posRu = "существительное",
+                senses = listOf(
+                    sense("n1", "a large four-legged mammal", "лошадь", "конь"),
+                    sense("n5", "an informal basketball game", "«лошадка» (баскетбольная игра)")
+                )
+            )
+        )
+
+        // Словарная форма по-прежнему находит своё значение целым словом.
+        assertEquals("n1", match(article, "лошадь", "noun")?.id)
+        // А форма, у которой целого совпадения нет, упирается в ничью обрубков — и это промах,
+        // а не выбор наугад между «лошадью» и баскетболом.
+        assertNull(match(article, "лошадей", "noun"))
+    }
+
+    @Test
+    fun `a stem still matches when nothing competes with it`() {
+        val article = entry(
+            PosGroup(
+                pos = "noun",
+                posRu = "существительное",
+                senses = listOf(
+                    sense("n1", "a large four-legged mammal", "лошадь", "конь"),
+                    sense("n2", "a strap for a dog", "поводок")
+                )
+            )
+        )
+
+        assertEquals("n1", match(article, "лошадей", "noun")?.id)
+    }
+
+    @Test
     fun `a part of speech nobody wrote about does not narrow the article to nothing`() {
         // Модель может назвать часть речи, которой в статье нет: искать тогда надо по всей
         // статье, а не отвечать «не нашлось» из-за пометы.
