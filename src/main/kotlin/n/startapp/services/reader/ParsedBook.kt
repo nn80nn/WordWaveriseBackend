@@ -11,7 +11,7 @@ data class ParsedBook(
     val title: String,
     val author: String?,
     val language: String?,
-    /** "EPUB" | "FB2" | "TXT" | "HTML" | "PASTE" */
+    /** "EPUB" | "FB2" | "PDF" | "TXT" | "HTML" | "PASTE" */
     val format: String,
     val chapters: List<ParsedChapter>
 )

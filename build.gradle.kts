@@ -79,6 +79,12 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 
+    // PDF: чистая Java, без своей сети и без второго netty. У PDFBox 3 логирование на SLF4J,
+    // который у нас уже есть от logback, транзитивно приезжает только fontbox.
+    // ⚠️ Проверка после любой новой библиотеки одна: собрать fat JAR и убедиться, что
+    // io/netty/handler/codec/DefaultHeadersImpl.class лежит в нём ровно один раз.
+    implementation("org.apache.pdfbox:pdfbox:3.0.3")
+
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 

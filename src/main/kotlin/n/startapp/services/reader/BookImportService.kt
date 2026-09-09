@@ -7,6 +7,7 @@ import n.startapp.repositories.BookRepository
 import n.startapp.services.reader.parse.EpubParser
 import n.startapp.services.reader.parse.Fb2Parser
 import n.startapp.services.reader.parse.HtmlDocumentParser
+import n.startapp.services.reader.parse.PdfParser
 import n.startapp.services.reader.parse.PlainTextParser
 import n.startapp.services.reader.parse.ZipArchive
 import java.nio.charset.CodingErrorAction
@@ -106,6 +107,10 @@ class BookImportService(private val repository: BookRepository) {
             }
         }
 
+        // Подпись PDF, а не расширение: «.pdf» с HTML внутри и книга без расширения тут
+        // встречаются ровно так же часто, как и всё остальное.
+        if (looksLikePdf(bytes)) return PdfParser.parse(bytes, fallbackTitle = baseName(name))
+
         val text = decodeText(bytes)
         val head = text.take(2048)
 
@@ -133,6 +138,12 @@ class BookImportService(private val repository: BookRepository) {
         return runCatching { decoder.decode(ByteBuffer.wrap(bytes)).toString() }
             .getOrElse { String(bytes, charset("windows-1251")) }
             .removePrefix("\uFEFF")
+    }
+
+    /** `%PDF-` в первых байтах. Перед ним попадается мусор от почтовых клиентов, отсюда поиск. */
+    private fun looksLikePdf(bytes: ByteArray): Boolean {
+        val head = String(bytes.copyOfRange(0, minOf(bytes.size, 1024)), Charsets.ISO_8859_1)
+        return head.contains("%PDF-")
     }
 
     private fun baseName(fileName: String): String? = fileName
