@@ -26,7 +26,11 @@ import n.startapp.services.lexical.SenseBackfill
 import n.startapp.services.lexical.SenseWording
 import org.slf4j.LoggerFactory
 
-fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
+fun Route.savedWordsRoutes(
+    lexicalEntries: LexicalEntryRepository,
+    /** Подбирает значение по предложению для слов, сохранённых из книги. */
+    senseResolver: n.startapp.services.lexical.SavedSenseResolver? = null
+) {
     val savedWordRepository = SavedWordRepository()
     val flashcardRepository = FlashcardRepository()
     val folderCatalog = FolderCatalog(FolderAccessResolver(), savedWordRepository)
@@ -38,7 +42,7 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
                 post {
                     val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                     val request = call.receive<SaveWordRequest>()
-                    val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries, flashcardRepository)
+                    val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries, flashcardRepository, senseResolver)
 
                     call.respond(
                         HttpStatusCode.Created,
@@ -137,7 +141,7 @@ fun Route.savedWordsRoutes(lexicalEntries: LexicalEntryRepository) {
             post("/save") {
                 val userId = getUserIdFromPrincipal(call) ?: throw UnauthorizedException("Invalid token")
                 val request = call.receive<SaveWordRequest>()
-                val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries, flashcardRepository)
+                val savedWord = savedWordRepository.saveFrom(request, userId, lexicalEntries, flashcardRepository, senseResolver)
 
                 call.respond(
                     ApiResponse.success(savedWord.toDTO())
@@ -171,7 +175,9 @@ private suspend fun SavedWordRepository.saveFrom(
     request: SaveWordRequest,
     userId: Int,
     lexicalEntries: LexicalEntryRepository,
-    flashcards: FlashcardRepository
+    flashcards: FlashcardRepository,
+    /** Кому отдать слово, у которого значение придётся выбирать по предложению. */
+    senseResolver: n.startapp.services.lexical.SavedSenseResolver? = null
 ): SavedWord {
     if (request.word.isBlank()) throw BadRequestException("Word cannot be empty")
 
@@ -186,8 +192,17 @@ private suspend fun SavedWordRepository.saveFrom(
     // never took. The clients no longer offer it; an older app still does, and this is where
     // that request stops producing such a row. The first sense is what the row displayed
     // anyway, so nothing on screen moves.
+    /**
+     * ⚠️ Слово с предложением **не** получает первое значение статьи.
+     *
+     * Первое значение — это ответ на «выбора не было». У слова из книги выбор есть, просто
+     * сделать его сейчас нечем: статьи может не быть вовсе, а быстрая подсказка честно
+     * промахивается там, где двум смыслам подходит один русский перевод. Подставить первое
+     * значит положить человеку в словарь карточку про другой смысл — молча и навсегда.
+     * Строка остаётся без значения, и его выберет [SavedSenseResolver] по этому предложению.
+     */
     val pinned = request.senseId?.trim()?.takeIf { it.isNotEmpty() }
-        ?: SenseBackfill.choose(entry)
+        ?: if (request.context != null) null else SenseBackfill.choose(entry)
 
     val wording = pinned?.let { senseId -> entry?.let { SenseWording.of(it, senseId) } }
 
@@ -198,8 +213,24 @@ private suspend fun SavedWordRepository.saveFrom(
         definition = wording?.definition ?: request.definition,
         example = wording?.example,
         senseId = pinned,
-        categoryIds = request.categoryIds.orEmpty()
+        categoryIds = request.categoryIds.orEmpty(),
+        context = request.context
     ) ?: throw Exception("Failed to save word")
+
+    // Значение по контексту подбирается в фоне: человек читает дальше, а не ждёт статью.
+    if (pinned == null && request.context != null && senseResolver != null) {
+        senseResolver.schedule(
+            SavedWordRepository.ContextRow(
+                id = saved.id,
+                userId = userId,
+                word = word,
+                sentence = request.context.sentence,
+                tokenIndex = request.context.tokenIndex,
+                pos = request.context.pos,
+                translation = saved.translation
+            )
+        )
+    }
 
     // Карточка этого слова могла быть создана раньше — до того, как человек вообще выбрал
     // значение. Оставить её как есть значило бы, что список слов и повторение спорят друг с

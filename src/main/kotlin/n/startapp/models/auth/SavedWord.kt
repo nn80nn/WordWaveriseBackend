@@ -92,7 +92,25 @@ data class SaveWordRequest(
     val senseId: String? = null,
 
     /** File it straight away. Absent means «никуда», which is not the same as an empty list. */
-    val categoryIds: List<Int>? = null
+    val categoryIds: List<Int>? = null,
+
+    /**
+     * Откуда слово взято: предложение книги и место слова в нём.
+     *
+     * Присылается, когда значение назвать нечем — статьи нет либо подсказка не выбрала его
+     * уверенно. Сервер тогда **не подставляет первое** значение, а запоминает предложение и
+     * возвращается к слову, когда статья написана.
+     */
+    val context: SaveContext? = null
+)
+
+/** Предложение, в котором слово встретилось. Без него «правильное значение» выбрать не из чего. */
+@Serializable
+data class SaveContext(
+    val sentence: String,
+    val tokenIndex: Int? = null,
+    /** Часть речи в этом предложении — так, как её назвала подсказка. */
+    val pos: String? = null
 )
 
 /**

@@ -22,6 +22,19 @@ object SavedWords : Table("saved_words") {
      */
     val senseId = varchar("sense_id", 32).nullable()
 
+    /**
+     * Предложение, из которого слово сохранили, — и место слова в нём.
+     *
+     * ⚠️ Хранится ради **значения**, а не ради красоты. Слово из книги сохраняют по одному
+     * нажатию, статьи у него может ещё не быть, и выбрать смысл в этот момент не из чего.
+     * Предложение — единственное, по чему смысл можно выбрать позже, когда статья появится;
+     * без него остаётся «первое значение статьи», то есть карточка про другое слово.
+     */
+    val contextSentence = text("context_sentence").nullable()
+    val contextTokenIndex = integer("context_token_index").nullable()
+    /** Часть речи в этом предложении: значение обязано найтись в её группе, а не в любой. */
+    val contextPos = varchar("context_pos", 32).nullable()
+
     val savedAt = timestamp("saved_at").clientDefault { Instant.now() }
 
     /**

@@ -98,7 +98,27 @@ class ServiceRegistry {
     val warmupService =
         WarmupService(lookupService, warmupOracle, warmupQueueRepository, lexicalEntryRepository)
 
+    /**
+     * Слово, сохранённое из книги, получает то значение, в котором стояло в тексте.
+     *
+     * Живёт здесь, а не в маршруте: работа идёт в фоне и переживает запрос, а после рестарта
+     * подхватывает хвост — статья пишется минуту, деплой её не ждёт.
+     */
+    val savedSenseResolver = n.startapp.services.lexical.SavedSenseResolver(
+        saved = n.startapp.repositories.SavedWordRepository(),
+        entries = lexicalEntryRepository,
+        lookup = lookupService,
+        context = contextAnalysisService,
+        flashcards = n.startapp.repositories.FlashcardRepository()
+    )
+
     init {
+        // Хвост с прошлого запуска: слова, сохранённые перед рестартом, ждут своего значения.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching { savedSenseResolver.sweep() }
+                .onFailure { logger.warn("Не удалось разобрать хвост сохранённых слов: ${it.message}") }
+        }
+
         // Every saved word gets an explicit sense. Off the startup path — it reads the corpus
         // for every unpinned word — but before anyone is served, in practice, because the pass
         // is short and the rows it looks at are the ones nobody has opened yet today.

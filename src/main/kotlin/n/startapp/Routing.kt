@@ -162,7 +162,7 @@ fun Application.configureRouting(services: ServiceRegistry) {
         authRoutes()
 
         // Saved words routes (protected)
-        savedWordsRoutes(services.lexicalEntryRepository)
+        savedWordsRoutes(services.lexicalEntryRepository, services.savedSenseResolver)
 
         // Flashcard routes (protected)
         flashcardRoutes()

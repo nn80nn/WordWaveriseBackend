@@ -5,6 +5,7 @@ import n.startapp.database.tables.Flashcards
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.SavedWordCategories
 import n.startapp.database.tables.SavedWords
+import n.startapp.models.auth.SaveContext
 import n.startapp.models.auth.SavedWord
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -83,7 +84,9 @@ class SavedWordRepository {
         definition: String? = null,
         example: String? = null,
         senseId: String? = null,
-        categoryIds: Collection<Int> = emptyList()
+        categoryIds: Collection<Int> = emptyList(),
+        /** Предложение, из которого слово сохранили: по нему значение выберется позже. */
+        context: SaveContext? = null
     ): SavedWord? = dbQuery {
         val rows = SavedWords.selectAll()
             .where { (SavedWords.userId eq userId) and (SavedWords.word eq word) }
@@ -102,6 +105,13 @@ class SavedWordRepository {
                     it[SavedWords.translation] = translation?.take(500)
                     it[SavedWords.definition] = definition
                     it[SavedWords.example] = example
+                    // ⚠️ Контекст не затирается пустым: слово могли сохранить из книги, а потом
+                    // ещё раз из поиска, и предложение — единственная зацепка для значения.
+                    context?.let { ctx ->
+                        it[SavedWords.contextSentence] = ctx.sentence.take(2000)
+                        it[SavedWords.contextTokenIndex] = ctx.tokenIndex
+                        it[SavedWords.contextPos] = ctx.pos?.take(32)
+                    }
                 }
             }
             existingId
@@ -113,6 +123,9 @@ class SavedWordRepository {
                 it[SavedWords.definition] = definition
                 it[SavedWords.example] = example
                 it[SavedWords.senseId] = senseId
+                it[SavedWords.contextSentence] = context?.sentence?.take(2000)
+                it[SavedWords.contextTokenIndex] = context?.tokenIndex
+                it[SavedWords.contextPos] = context?.pos?.take(32)
             }[SavedWords.id]
         }
 
@@ -242,8 +255,11 @@ class SavedWordRepository {
      * already holds is how you hand somebody the same meaning twice.
      */
     suspend fun rowsNeedingSense(): List<SenseRow> = dbQuery {
+        // ⚠️ Строки с предложением пропускаются: у них значение выбирает `SavedSenseResolver`
+        // по контексту, а эта миграция поставила бы первое значение статьи — то есть отняла бы
+        // у слова из книги ровно тот смысл, ради которого его сохраняли.
         val words = SavedWords.selectAll()
-            .where { SavedWords.senseId.isNull() }
+            .where { SavedWords.senseId.isNull() and SavedWords.contextSentence.isNull() }
             .map { it[SavedWords.word] }
             .distinct()
         if (words.isEmpty()) return@dbQuery emptyList()
@@ -262,6 +278,41 @@ class SavedWordRepository {
                 )
             }
     }
+
+    /**
+     * Слова, у которых есть предложение, но ещё нет значения.
+     *
+     * ⚠️ Именно они и **не должны** доставаться общей миграции: та ставит первое значение
+     * статьи, а у этих строк есть чем выбрать правильное. Порядок — свежие первыми: слово,
+     * сохранённое минуту назад, человек как раз держит в голове.
+     */
+    suspend fun rowsAwaitingContextSense(limit: Int = 100): List<ContextRow> = dbQuery {
+        SavedWords.selectAll()
+            .where { SavedWords.senseId.isNull() and SavedWords.contextSentence.isNotNull() }
+            .orderBy(SavedWords.savedAt to SortOrder.DESC)
+            .limit(limit)
+            .map {
+                ContextRow(
+                    id = it[SavedWords.id],
+                    userId = it[SavedWords.userId],
+                    word = it[SavedWords.word],
+                    sentence = it[SavedWords.contextSentence].orEmpty(),
+                    tokenIndex = it[SavedWords.contextTokenIndex],
+                    pos = it[SavedWords.contextPos],
+                    translation = it[SavedWords.translation]
+                )
+            }
+    }
+
+    data class ContextRow(
+        val id: Int,
+        val userId: Int,
+        val word: String,
+        val sentence: String,
+        val tokenIndex: Int?,
+        val pos: String?,
+        val translation: String?
+    )
 
     /**
      * Removes every sense of [word], and the cards made from them.

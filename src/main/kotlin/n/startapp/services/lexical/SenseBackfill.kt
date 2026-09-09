@@ -33,4 +33,20 @@ object SenseBackfill {
             ?.flatMap { it.senses.asSequence() }
             ?.map { it.id }
             ?.firstOrNull { it.isNotBlank() && it !in taken }
+
+    /**
+     * То же, но в пределах названной части речи.
+     *
+     * ⚠️ Запасной ход для слова из книги, у которого разбор не назвал значения. Часть речи в
+     * предложении известна точно, и первое значение **её** группы — это всё ещё догадка, но
+     * догадка про то самое слово: `lead`-глагол и `lead`-металл различаются именно здесь.
+     * Части речи нет в статье — берём как раньше, по всей статье: помета не повод не сохранить.
+     */
+    fun chooseInPos(entry: LexicalEntry?, pos: String?, taken: Set<String> = emptySet()): String? {
+        val wanted = pos?.trim()?.takeIf { it.isNotBlank() } ?: return choose(entry, taken)
+        val group = entry?.posGroups?.firstOrNull { it.pos.equals(wanted, ignoreCase = true) }
+            ?: return choose(entry, taken)
+        return group.senses.map { it.id }.firstOrNull { it.isNotBlank() && it !in taken }
+            ?: choose(entry, taken)
+    }
 }
