@@ -6,6 +6,7 @@ import n.startapp.exceptions.BadRequestException
 import n.startapp.models.lexical.LexicalEntry
 import n.startapp.models.lexical.Sense
 import n.startapp.repositories.LexicalEntryRepository
+import n.startapp.services.lexical.SenseWording
 import n.startapp.repositories.LlmCacheRepository
 import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.LlmJson
@@ -29,6 +30,15 @@ data class ContextAnalysis(
     val senseId: String? = null,
     val senseMatched: Boolean = false,
     val senseDefinitionEn: String? = null,
+    /**
+     * Как это слово звучит — и запись, если она есть.
+     *
+     * ⚠️ Берётся у **части речи выбранного значения**, а не у статьи целиком: `lead`, `bow`,
+     * `read` на слух разные слова, и одна транскрипция на всё написание — это утверждение про
+     * одно значение и ошибка про другое.
+     */
+    val phonetic: String? = null,
+    val audioUrl: String? = null,
     /** Russian for the word as it appears here, in the right grammatical form. */
     val translationRu: String? = null,
     /** Russian for the dictionary form. */
@@ -62,6 +72,15 @@ data class ContextHint(
     val senseMatched: Boolean = false,
     /** From the corpus, when a sense matched: free, exact, and not the model's to invent. */
     val senseDefinitionEn: String? = null,
+    /**
+     * Как это слово звучит — и запись, если она есть.
+     *
+     * ⚠️ Берётся у **части речи выбранного значения**, а не у статьи целиком: `lead`, `bow`,
+     * `read` на слух разные слова, и одна транскрипция на всё написание — это утверждение про
+     * одно значение и ошибка про другое.
+     */
+    val phonetic: String? = null,
+    val audioUrl: String? = null,
 
     /**
      * The sense's other Russian equivalents — «вести, провожать, направлять».
@@ -237,6 +256,8 @@ class ContextAnalysisService(
         val lemma = draft.lemma?.trim()?.takeIf { it.isNotBlank() }
         val entry = lemma?.let { runCatching { entryRepository.findLatestByLemma(it) }.getOrNull() }
         val senseId = entry?.let { matchSense(it, draft.senseGlossEn, draft.pos) }
+        // Произношение — тем же кодом, что у карточки: одно место на всё приложение.
+        val wording = senseId?.let { SenseWording.of(entry, it) }
 
         return ContextAnalysis(
             text = text,
@@ -247,6 +268,16 @@ class ContextAnalysisService(
             senseId = senseId,
             senseMatched = senseId != null,
             senseDefinitionEn = draft.senseGlossEn?.trim()?.takeIf { it.isNotBlank() },
+            phonetic = if (senseId != null) {
+                wording?.phonetic
+            } else {
+                entry?.phonetic?.takeIf { it.isNotBlank() }
+            },
+            audioUrl = if (senseId != null) {
+                wording?.audioUrl
+            } else {
+                entry?.audioUrl?.takeIf { it.isNotBlank() }
+            },
             translationRu = draft.translationRu?.trim()?.takeIf { it.isNotBlank() },
             translationLemmaRu = draft.translationLemmaRu?.trim()?.takeIf { it.isNotBlank() },
             sentenceRu = draft.sentenceRu?.trim()?.takeIf { it.isNotBlank() },
@@ -312,6 +343,16 @@ class ContextAnalysisService(
         // и затевалось. Русские варианты значения лежат в статье, сравнение с ними бесплатно.
         val sense = entry?.let { matchSenseByTranslation(it, translation, pos) }
 
+        /**
+         * Произношение — то же самое, что показывает карточка, и берётся тем же кодом.
+         *
+         * ⚠️ Запасной вариант с уровня статьи разрешён только там, где значение **не**
+         * подобралось. У подобранного значения молчание — это ответ: `lead`-металл с записью
+         * /liːd/ учит вслух другому слову, и `SenseWording` намеренно не затыкает эту дыру
+         * записью части речи.
+         */
+        val wording = sense?.let { SenseWording.of(entry, it.id) }
+
         return ContextHint(
             text = text,
             tokens = tokenized.tokens,
@@ -328,6 +369,16 @@ class ContextAnalysisService(
                 .orEmpty()
                 .filter { !it.equals(translation, ignoreCase = true) }
                 .take(MAX_NEIGHBOUR_TRANSLATIONS),
+            phonetic = if (sense != null) {
+                wording?.phonetic
+            } else {
+                entry?.phonetic?.takeIf { it.isNotBlank() }
+            },
+            audioUrl = if (sense != null) {
+                wording?.audioUrl
+            } else {
+                entry?.audioUrl?.takeIf { it.isNotBlank() }
+            },
             cefr = sense?.cefr?.takeIf { it.isNotBlank() },
             register = sense?.register?.name?.takeIf { it != "NEUTRAL" },
             // Свойство значения, а не слова: `paper`-материал неисчисляем, `paper`-документ нет.
