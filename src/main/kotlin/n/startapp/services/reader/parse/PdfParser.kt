@@ -33,6 +33,17 @@ object PdfParser {
      */
     private const val SHORT_LINE_RATIO = 0.72
 
+    /**
+     * Строка короче этой доли обычной кончает абзац сама по себе.
+     *
+     * Так стоят заголовки и обрываются последние строки: продолжать абзац после трети строки
+     * значит склеить главу с её названием.
+     */
+    private const val HARD_BREAK_RATIO = 0.45
+
+    /** Чем может кончиться мысль. Строка, оборванная на «к» или «и», не кончилась. */
+    private val SENTENCE_END = setOf('.', '!', '?', '…', ':', ';', '»', '"', ')', '’')
+
     /** На скольких страницах строка должна повториться, чтобы считаться колонтитулом. */
     private const val FURNITURE_SHARE = 0.5
 
@@ -157,6 +168,8 @@ object PdfParser {
         val buffer = StringBuilder()
         var startedOn = 1
         var lastWasShort = false
+        var lastEndedSentence = false
+        var forcedBreak = false
 
         fun flush() {
             val text = TextNormaliser.clean(buffer.toString())
@@ -170,17 +183,32 @@ object PdfParser {
                 val line = entry.text
                 if (line.isEmpty()) {
                     // Пробел между абзацами: разрыв стоит в файле, гадать по ширине не нужно.
-                    lastWasShort = true
+                    forcedBreak = true
                     continue
                 }
                 if (mask(line) in furniture || PAGE_NUMBER.matches(line)) continue
 
+                /**
+                 * ⚠️ Обрыв строки — ещё не конец абзаца.
+                 *
+                 * Признаки вёрстки (короткая строка, метка PDFBox) в документе с полуторным
+                 * интервалом и рваным правым краем срабатывают на каждой второй строке, и
+                 * абзац рассыпался на обрывки: «требования к» отдельно, «приложению;»
+                 * отдельно. Поэтому они засчитываются, только если предыдущая строка **могла**
+                 * кончить мысль — стоит точка, двоеточие, точка с запятой, кавычка. Без этого
+                 * рвётся лишь то, что и в файле разорвано пустой строкой, или строка,
+                 * оборванная совсем коротко: так кончаются абзацы и стоят заголовки.
+                 */
+                val veryShort = lastWasShort && buffer.length < width * HARD_BREAK_RATIO
+                val looksDone = lastEndedSentence && (lastWasShort || entry.starts)
+
                 if (buffer.isEmpty()) {
                     startedOn = number
-                } else if (lastWasShort || entry.starts) {
+                } else if (forcedBreak || looksDone || veryShort) {
                     flush()
                     startedOn = number
                 }
+                forcedBreak = false
 
                 if (buffer.isNotEmpty()) {
                     val tail = buffer.last()
@@ -198,6 +226,7 @@ object PdfParser {
                 }
                 buffer.append(line)
                 lastWasShort = line.length < width * SHORT_LINE_RATIO
+                lastEndedSentence = line.lastOrNull() in SENTENCE_END
             }
         }
         flush()
