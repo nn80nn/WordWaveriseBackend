@@ -3,8 +3,6 @@ package n.startapp.services.reader.parse
 import n.startapp.models.reader.BlockKind
 import n.startapp.services.reader.ParsedBlock
 import org.jsoup.nodes.Element
-import org.jsoup.nodes.Node
-import org.jsoup.nodes.TextNode
 
 /**
  * Turns a chunk of XHTML into blocks, keeping only what a reader renders.
@@ -63,38 +61,20 @@ object HtmlBlocks {
         else -> BlockKind.PARAGRAPH
     }
 
-    /** One `<br>`-separated line is one block: verse read as a paragraph is not verse. */
-    private fun emit(kind: BlockKind, element: Element, into: MutableList<ParsedBlock>) {
-        for (line in linesOf(element)) {
-            val text = TextNormaliser.clean(line)
-            if (text.isNotEmpty()) into += ParsedBlock(kind, text)
-        }
-    }
-
     /**
-     * Splits an element's text at its `<br>`s.
+     * One `<br>`-separated line is one block: verse read as a paragraph is not verse.
      *
-     * Walking the nodes rather than replacing `<br>` with a newline first, because
-     * `Element.text()` normalises whitespace: a newline put in to mark the break would come back
-     * as a space, and a stanza would arrive as one long line.
+     * ⚠️ A block-level `id` (`<p id="note3">`) belongs to the whole element, not to any one
+     * `<br>`-split line — it is attached to the first line's unit, since that is the block a
+     * jump to it actually lands on.
      */
-    private fun linesOf(element: Element): List<String> {
-        val lines = mutableListOf<String>()
-        val current = StringBuilder()
-
-        fun walk(node: Node) {
-            when {
-                node is TextNode -> current.append(node.text())
-                node is Element && node.tagName().equals("br", ignoreCase = true) -> {
-                    lines += current.toString()
-                    current.setLength(0)
-                }
-                node is Element -> node.childNodes().forEach { walk(it) }
-            }
+    private fun emit(kind: BlockKind, element: Element, into: MutableList<ParsedBlock>) {
+        val blockAnchor = element.id().takeIf { it.isNotBlank() }
+        InlineLinks.walk(element, splitOnBr = true).forEachIndexed { i, unit ->
+            val text = TextNormaliser.clean(unit.text)
+            if (text.isEmpty()) return@forEachIndexed
+            val anchors = if (i == 0 && blockAnchor != null) unit.anchorIds + blockAnchor else unit.anchorIds
+            into += ParsedBlock(kind, text, links = InlineLinks.resolve(text, unit.links), anchorIds = anchors)
         }
-
-        element.childNodes().forEach { walk(it) }
-        lines += current.toString()
-        return lines
     }
 }

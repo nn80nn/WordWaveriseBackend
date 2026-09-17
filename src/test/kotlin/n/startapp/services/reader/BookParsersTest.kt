@@ -124,6 +124,25 @@ class BookParsersTest {
         )
     }
 
+    @Test
+    fun `an internal link resolves within the same chapter, an external one is dropped`() {
+        val book = EpubParser.parse(
+            epub(
+                "one.xhtml" to
+                    """<html><body>
+                        <p>See <a href="#note1">this</a> and <a href="https://example.com">that</a>.</p>
+                        <p id="note1">The note itself.</p>
+                    </body></html>"""
+            )
+        )
+        val blocks = book.chapters.first().blocks
+        val marker = blocks.first()
+        val link = marker.links.single()
+        assertEquals("this", marker.text.substring(link.start, link.end))
+        assertEquals("note1", link.targetAnchorId)
+        assertTrue(blocks.last().anchorIds.contains("note1"))
+    }
+
     // ── FB2 ────────────────────────────────────────────────────────────────────────────────
 
     private fun fb2(body: String, encoding: String = "UTF-8"): ByteArray {
@@ -164,19 +183,39 @@ class BookParsersTest {
     }
 
     @Test
-    fun `the notes body is not appended to the book`() {
-        // A second <body name="notes"> holds footnotes; read as a chapter it adds a hundred
-        // numbered fragments to the end of the novel.
+    fun `the notes body is appended as its own trailing chapter, not mixed into the story`() {
+        // A second <body name="notes"> holds footnotes. Reading it inline with the story would
+        // interrupt it; dropping it entirely leaves a footnote link with nowhere to land. It goes
+        // in as a chapter of its own, after everything else.
         val book = Fb2Parser.parse(
             fb2(
                 """
                 <body><section><p>Текст книги.</p></section></body>
-                <body name="notes"><section><p>1. Примечание.</p></section></body>
+                <body name="notes"><section id="n1"><p>1. Примечание.</p></section></body>
                 """
             )
         )
-        assertEquals(1, book.chapters.size)
+        assertEquals(2, book.chapters.size)
         assertFalse(book.chapters.first().blocks.any { it.text.contains("Примечание") })
+        assertTrue(book.chapters.last().blocks.any { it.text.contains("Примечание") })
+    }
+
+    @Test
+    fun `a footnote marker resolves to the note's block once both are in one book`() {
+        val book = Fb2Parser.parse(
+            fb2(
+                """
+                <body><section><p>See<a l:href="#n1" type="note">1</a> for detail.</p></section></body>
+                <body name="notes"><section id="n1"><p>1. Примечание.</p></section></body>
+                """
+            )
+        )
+        val marker = book.chapters.first().blocks.first()
+        val link = marker.links.single()
+        assertEquals("1", marker.text.substring(link.start, link.end))
+        assertEquals("n1", link.targetAnchorId)
+        val target = book.chapters.last().blocks.first { it.anchorIds.contains("n1") }
+        assertTrue(target.text.contains("Примечание"))
     }
 
     @Test

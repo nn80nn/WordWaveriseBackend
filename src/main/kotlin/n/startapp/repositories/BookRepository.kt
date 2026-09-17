@@ -8,6 +8,7 @@ import n.startapp.database.tables.BookBookmarks
 import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ReadingPositions
+import kotlinx.serialization.json.Json
 import n.startapp.models.reader.BlockDTO
 import n.startapp.models.reader.BlockKind
 import n.startapp.models.reader.BlockPageDTO
@@ -15,6 +16,7 @@ import n.startapp.models.reader.BookDTO
 import n.startapp.models.reader.BookDetailDTO
 import n.startapp.models.reader.BookmarkDTO
 import n.startapp.models.reader.ChapterDTO
+import n.startapp.models.reader.LinkDTO
 import n.startapp.models.reader.ReadingPositionDTO
 import n.startapp.services.context.Tokenizer
 import n.startapp.services.reader.ParsedBook
@@ -35,6 +37,8 @@ class BookRepository {
 
     /** How many blocks one request may carry. Beyond this the reader is prefetching, not reading. */
     private val maxPageSize = 200
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     /** Сколько символов абзаца показать в списке закладок. */
     private val PREVIEW_CHARS = 90
@@ -74,14 +78,35 @@ class BookRepository {
         // The ordinal is assigned here, once, walking the chapters in reading order. It is the
         // book's address space from this point on: positions store it and blocks are fetched by
         // it, so nothing may renumber it afterwards.
+        //
+        // ⚠️ A link's target isn't known until every block has its ordinal — an anchor can sit in
+        // a later chapter than the link pointing at it (a footnote is *always* later). Two passes
+        // over the same walk: the first hands out ordinals and records where each anchor id
+        // landed, the second resolves links against that map now that every target exists.
         var ordinal = 0
+        val anchorToOrdinal = mutableMapOf<String, Int>()
+        for (chapter in parsed.chapters) {
+            for (block in chapter.blocks) {
+                for (id in block.anchorIds) anchorToOrdinal.putIfAbsent(id, ordinal)
+                ordinal++
+            }
+        }
+
+        ordinal = 0
         val chapterRows = mutableListOf<ChapterRow>()
         val blockRows = mutableListOf<BlockRow>()
 
         parsed.chapters.forEachIndexed { chapterIndex, chapter ->
             chapterRows += ChapterRow(chapterIndex, chapter.title, ordinal, chapter.blocks.size)
             for (block in chapter.blocks) {
-                blockRows += BlockRow(ordinal, chapterIndex, block.kind.name, block.text)
+                // A link to its own block is not a jump anywhere, and dropping it here is
+                // simpler than teaching every client "the target might be where you already are".
+                val links = block.links.mapNotNull { link ->
+                    val target = anchorToOrdinal[link.targetAnchorId] ?: return@mapNotNull null
+                    if (target == ordinal) return@mapNotNull null
+                    LinkDTO(link.start, link.end, target)
+                }
+                blockRows += BlockRow(ordinal, chapterIndex, block.kind.name, block.text, links)
                 ordinal++
             }
         }
@@ -100,6 +125,7 @@ class BookRepository {
             this[BookBlocks.chapterIndex] = row.chapterIndex
             this[BookBlocks.kind] = row.kind
             this[BookBlocks.text] = row.text
+            this[BookBlocks.linksJson] = row.links.takeIf { it.isNotEmpty() }?.let { json.encodeToString(it) }
         }
 
         Books.selectAll().where { Books.id eq bookId }.first().let { toDTO(it, null) }
@@ -336,13 +362,17 @@ class BookRepository {
         val sentences = if (!withTokens) emptyList() else SentenceSplitter.split(text).map { sentence ->
             sentence.copy(tokens = Tokenizer.tokenize(sentence.text).tokens)
         }
+        val links = row[BookBlocks.linksJson]
+            ?.let { runCatching { json.decodeFromString<List<LinkDTO>>(it) }.getOrNull() }
+            .orEmpty()
         return BlockDTO(
             ordinal = row[BookBlocks.ordinal],
             chapterIndex = row[BookBlocks.chapterIndex],
             kind = runCatching { BlockKind.valueOf(row[BookBlocks.kind]) }
                 .getOrDefault(BlockKind.PARAGRAPH),
             text = text,
-            sentences = sentences
+            sentences = sentences,
+            links = links
         )
     }
 
@@ -370,7 +400,8 @@ class BookRepository {
         val ordinal: Int,
         val chapterIndex: Int,
         val kind: String,
-        val text: String
+        val text: String,
+        val links: List<LinkDTO> = emptyList()
     )
 
     companion object {

@@ -29,6 +29,13 @@ data class SentenceDTO(
     val tokens: List<Token> = emptyList()
 )
 
+/**
+ * An in-text link, already resolved to the block it points at — a footnote marker, a
+ * cross-reference. Offsets are into [BlockDTO.text], the same coordinate space as a sentence's.
+ */
+@Serializable
+data class LinkDTO(val start: Int, val end: Int, val targetOrdinal: Int)
+
 @Serializable
 data class BlockDTO(
     /** 0-based across the whole book — the address a reading position stores. */
@@ -36,7 +43,8 @@ data class BlockDTO(
     val chapterIndex: Int,
     val kind: BlockKind,
     val text: String,
-    val sentences: List<SentenceDTO> = emptyList()
+    val sentences: List<SentenceDTO> = emptyList(),
+    val links: List<LinkDTO> = emptyList()
 )
 
 @Serializable

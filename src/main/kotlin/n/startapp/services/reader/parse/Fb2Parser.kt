@@ -35,15 +35,18 @@ object Fb2Parser {
         }
         val language = info?.selectFirst("lang")?.text()?.trim()
 
-        // A second <body name="notes"> holds footnotes. Reading it as a chapter would append a
-        // hundred numbered fragments to the end of the book.
+        // A second <body name="notes"> holds footnotes — parsed separately and appended as a
+        // trailing chapter (below) rather than mixed into the reading order, so a link to one
+        // has somewhere to land without a hundred numbered fragments interrupting the story.
         val body = document.select("body").firstOrNull { !it.hasAttr("name") }
             ?: document.selectFirst("body")
             ?: throw BadRequestException("FB2: в файле нет текста")
 
         val sections = body.children().filter { it.tagName().equals("section", ignoreCase = true) }
         val chapters = if (sections.isEmpty()) listOf(chapterOf(body)) else sections.map { chapterOf(it) }
-        val kept = chapters.filter { it.blocks.isNotEmpty() }
+        val notesBody = document.select("body").firstOrNull { it.attr("name").equals("notes", ignoreCase = true) }
+        val kept = (chapters + listOfNotNull(notesBody?.let { chapterOf(it, defaultTitle = "Примечания") }))
+            .filter { it.blocks.isNotEmpty() }
 
         if (kept.isEmpty()) throw BadRequestException("FB2: не удалось прочитать текст книги")
 
@@ -56,44 +59,60 @@ object Fb2Parser {
         )
     }
 
-    private fun chapterOf(section: Element): ParsedChapter {
+    private fun chapterOf(section: Element, defaultTitle: String? = null): ParsedChapter {
         val blocks = mutableListOf<ParsedBlock>()
-        collect(section, blocks, inTitle = false, inQuote = false)
-        val title = blocks.firstOrNull { it.kind == BlockKind.HEADING }?.text
+        collect(section, blocks, mutableSetOf(), inTitle = false, inQuote = false)
+        val title = blocks.firstOrNull { it.kind == BlockKind.HEADING }?.text ?: defaultTitle
         return ParsedChapter(title = title, blocks = blocks)
     }
 
+    /**
+     * [pending] carries an ancestor `<section id="…">`'s id down to the first block emitted from
+     * inside it — a footnote's id sits on the `<section>` wrapping its `<p>`, not the `<p>`
+     * itself, and a link needs the id to resolve to a block that actually exists.
+     */
     private fun collect(
         element: Element,
         into: MutableList<ParsedBlock>,
+        pending: MutableSet<String>,
         inTitle: Boolean,
         inQuote: Boolean
     ) {
         for (child in element.children()) {
+            child.id().takeIf { it.isNotBlank() }?.let { pending += it }
             when (child.tagName().lowercase()) {
-                "title" -> collect(child, into, inTitle = true, inQuote = inQuote)
-                "subtitle" -> emit(BlockKind.HEADING, child, into)
-                "cite", "epigraph" -> collect(child, into, inTitle = inTitle, inQuote = true)
+                "title" -> collect(child, into, pending, inTitle = true, inQuote = inQuote)
+                "subtitle" -> emit(BlockKind.HEADING, child, into, pending)
+                "cite", "epigraph" -> collect(child, into, pending, inTitle = inTitle, inQuote = true)
                 "p", "text-author" -> emit(
                     when {
                         inTitle -> BlockKind.HEADING
                         inQuote -> BlockKind.QUOTE
                         else -> BlockKind.PARAGRAPH
                     },
-                    child, into
+                    child, into, pending
                 )
                 // A line of verse is a block of its own: joined into a paragraph it stops
                 // being verse, and the tokeniser stops seeing where a line ends.
-                "v" -> emit(if (inQuote) BlockKind.QUOTE else BlockKind.PARAGRAPH, child, into)
+                "v" -> emit(if (inQuote) BlockKind.QUOTE else BlockKind.PARAGRAPH, child, into, pending)
                 "empty-line", "image", "binary" -> {}
-                else -> collect(child, into, inTitle = inTitle, inQuote = inQuote)
+                else -> collect(child, into, pending, inTitle = inTitle, inQuote = inQuote)
             }
         }
     }
 
-    private fun emit(kind: BlockKind, element: Element, into: MutableList<ParsedBlock>) {
-        val text = TextNormaliser.clean(element.text())
-        if (text.isNotEmpty()) into += ParsedBlock(kind, text)
+    private fun emit(
+        kind: BlockKind,
+        element: Element,
+        into: MutableList<ParsedBlock>,
+        pending: MutableSet<String>
+    ) {
+        val unit = InlineLinks.walk(element, splitOnBr = false).firstOrNull() ?: return
+        val text = TextNormaliser.clean(unit.text)
+        if (text.isEmpty()) return
+        val anchors = unit.anchorIds + pending
+        pending.clear()
+        into += ParsedBlock(kind, text, links = InlineLinks.resolve(text, unit.links), anchorIds = anchors)
     }
 
     /**

@@ -143,6 +143,31 @@ class ReaderLibraryTest {
     }
 
     @Test
+    fun `a footnote link survives import and resolves to the note's ordinal`(): Unit = onFreshDatabase {
+        runBlocking {
+            val reader = user()
+            val fb2 = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <FictionBook>
+                  <description><title-info><book-title>Notes</book-title></title-info></description>
+                  <body><section><p>See<a l:href="#n1" type="note">1</a> for detail.</p></section></body>
+                  <body name="notes"><section id="n1"><p>The note itself.</p></section></body>
+                </FictionBook>
+            """.trimIndent().toByteArray()
+
+            val imported = import.importFile(reader, "notes.fb2", fb2)
+            val page = assertNotNull(books.blocks(reader, imported.book.id, 0, 100, withTokens = false))
+
+            val marker = page.blocks.first { it.text.contains("for detail") }
+            val link = assertNotNull(marker.links.singleOrNull())
+            val target = page.blocks.first { it.ordinal == link.targetOrdinal }
+            assertTrue(target.text.contains("The note itself"))
+            // The note sits after the story, not interrupting it.
+            assertTrue(link.targetOrdinal > marker.ordinal)
+        }
+    }
+
+    @Test
     fun `asking for text without tokens leaves the sentences out`(): Unit = onFreshDatabase {
         runBlocking {
             val reader = user()

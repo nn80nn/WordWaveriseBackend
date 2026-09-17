@@ -30,6 +30,13 @@ object BookBlocks : Table("book_blocks") {
 
     val text = text("text")
 
+    /**
+     * JSON-encoded `List<ResolvedLink>` (offsets into [text] plus a target ordinal), or null for
+     * the overwhelming majority of blocks that carry no in-text link. A column rather than a
+     * table: a link belongs to exactly one block and is never queried on its own.
+     */
+    val linksJson = text("links_json").nullable()
+
     override val primaryKey = PrimaryKey(id)
 
     init {
