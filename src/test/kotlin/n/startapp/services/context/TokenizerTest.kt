@@ -77,6 +77,37 @@ class TokenizerTest {
     }
 
     @Test
+    fun `a noun is not grouped with a following preposition`() {
+        // The book is a book on the table, not a "book on" — the old rule grouped any tappable
+        // word in front of a particle-shaped word, whitelisting fixes exactly this case.
+        val result = Tokenizer.tokenize("The book on the table is mine.")
+        assertTrue(result.tokens.first { it.text == "book" }.groupWith.isEmpty())
+    }
+
+    @Test
+    fun `a bare noun before a particle is not grouped even when the cat sat on the mat`() {
+        val result = Tokenizer.tokenize("The cat sat on the mat")
+        assertTrue(result.tokens.first { it.text == "sat" }.groupWith.isEmpty())
+    }
+
+    @Test
+    fun `inflected forms of a whitelisted phrasal verb are still grouped`() {
+        val result = Tokenizer.tokenize("She gives up too easily.")
+        val gives = result.tokens.first { it.text == "gives" }
+        val up = result.tokens.first { it.text == "up" }
+        assertEquals(listOf(up.index), gives.groupWith)
+        assertEquals(listOf(gives.index), up.groupWith)
+    }
+
+    @Test
+    fun `a whitelisted phrasal verb with a doubled consonant is grouped`() {
+        val result = Tokenizer.tokenize("They are setting up a new office.")
+        val setting = result.tokens.first { it.text == "setting" }
+        val up = result.tokens.first { it.text == "up" }
+        assertEquals(listOf(up.index), setting.groupWith)
+    }
+
+    @Test
     fun `empty and single token inputs are handled`() {
         assertTrue(Tokenizer.tokenize("").tokens.isEmpty())
         assertTrue(Tokenizer.tokenize("   ").tokens.isEmpty())
