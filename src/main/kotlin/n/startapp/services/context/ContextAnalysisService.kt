@@ -212,18 +212,21 @@ class ContextAnalysisService(
 
     fun tokenize(text: String): TokenizedText = Tokenizer.tokenize(text)
 
-    suspend fun analyze(text: String, tokenIndex: Int?, token: String?): ContextAnalysis {
+    suspend fun analyze(text: String, tokenIndex: Int?, token: String?, tokenEnd: Int? = null): ContextAnalysis {
         if (text.isBlank()) throw BadRequestException("Field 'text' cannot be empty")
 
         val tokenized = Tokenizer.tokenize(text)
         val target = resolveTarget(tokenized, tokenIndex, token)
             ?: throw BadRequestException("Could not locate the requested token in the text")
+        val span = resolveSpan(tokenized, target, tokenEnd)
 
         // The phrasal unit, when there is one, is what should be looked up — "gave up", not "gave".
-        val surface = expandToUnit(tokenized, target)
+        // A multi-word selection already names its own span, so the phrasal-verb partner search
+        // (meant for exactly one tapped word) does not apply.
+        val surface = if (span != null) sliceSurface(text, tokenized, target, span) else expandToUnit(tokenized, target)
 
         val cacheKey = LlmCacheRepository.key(
-            "context", PROMPT_VERSION_CONTEXT, "${text.trim()}#${target.index}"
+            "context", PROMPT_VERSION_CONTEXT, "${text.trim()}#${target.index}${span?.let { "-$it" } ?: ""}"
         )
 
         val payload = cache?.get(cacheKey) ?: try {
@@ -254,7 +257,10 @@ class ContextAnalysisService(
         }
 
         val lemma = draft.lemma?.trim()?.takeIf { it.isNotBlank() }
-        val entry = lemma?.let { runCatching { entryRepository.findLatestByLemma(it) }.getOrNull() }
+        // ⚠️ A span picks no sense: a dictionary sense belongs to one word, and matching one
+        // against an arbitrary multi-word stretch would file it under a meaning nobody chose.
+        val entry = if (span != null) null else
+            lemma?.let { runCatching { entryRepository.findLatestByLemma(it) }.getOrNull() }
         val senseId = entry?.let { matchSense(it, draft.senseGlossEn, draft.pos) }
         // Произношение — тем же кодом, что у карточки: одно место на всё приложение.
         val wording = senseId?.let { SenseWording.of(entry, it) }
@@ -293,16 +299,17 @@ class ContextAnalysisService(
      * the provider is busy the reader is left with the full analysis, which the client offers as
      * a deliberate second step rather than as a wait nobody asked for.
      */
-    suspend fun hint(text: String, tokenIndex: Int?, token: String?): ContextHint {
+    suspend fun hint(text: String, tokenIndex: Int?, token: String?, tokenEnd: Int? = null): ContextHint {
         if (text.isBlank()) throw BadRequestException("Field 'text' cannot be empty")
 
         val tokenized = Tokenizer.tokenize(text)
         val target = resolveTarget(tokenized, tokenIndex, token)
             ?: throw BadRequestException("Could not locate the requested token in the text")
-        val surface = expandToUnit(tokenized, target)
+        val span = resolveSpan(tokenized, target, tokenEnd)
+        val surface = if (span != null) sliceSurface(text, tokenized, target, span) else expandToUnit(tokenized, target)
 
         val cacheKey = LlmCacheRepository.key(
-            "context_hint", PROMPT_VERSION_HINT, "${text.trim()}#${target.index}"
+            "context_hint", PROMPT_VERSION_HINT, "${text.trim()}#${target.index}${span?.let { "-$it" } ?: ""}"
         )
 
         val payload = cache?.get(cacheKey) ?: try {
@@ -336,7 +343,10 @@ class ContextAnalysisService(
         val lemma = draft.lemma?.trim()?.takeIf { it.isNotBlank() }
         val pos = draft.pos?.trim()?.takeIf { it.isNotBlank() }
         val translation = draft.translationRu?.trim()?.takeIf { it.isNotBlank() }
-        val entry = lemma?.let { runCatching { entryRepository.findLatestByLemma(it) }.getOrNull() }
+        // ⚠️ Как и в analyze(): диапазон в несколько слов не выбирает значения — оно принадлежит
+        // одному слову, а не произвольному куску текста.
+        val entry = if (span != null) null else
+            lemma?.let { runCatching { entryRepository.findLatestByLemma(it) }.getOrNull() }
 
         // ⚠️ Значение подбирается по переводу, а не по английскому определению: определения в
         // этом ответе нет, а просить его — заплатить теми самыми секундами, ради которых всё
@@ -477,6 +487,24 @@ class ContextAnalysisService(
         return tokenized.tokens
             .firstOrNull { it.tappable && it.text.lowercase() == needle }
             ?.let { ContextTarget(it.index, it.text) }
+    }
+
+    /**
+     * The last token index of a multi-word selection, or null when there is none.
+     *
+     * Null both when [tokenEnd] was not sent (every client before this field existed) and when
+     * it collapses to the same word as [target] — a one-word "range" is just a word, not a span.
+     */
+    private fun resolveSpan(tokenized: TokenizedText, target: ContextTarget, tokenEnd: Int?): Int? {
+        if (tokenEnd == null || tokenEnd <= target.index) return null
+        return tokenized.tokens.firstOrNull { it.index == tokenEnd }?.index
+    }
+
+    /** The exact substring the reader selected, offsets and all — not the tokens rejoined with spaces. */
+    private fun sliceSurface(text: String, tokenized: TokenizedText, target: ContextTarget, endIndex: Int): String {
+        val start = tokenized.tokens.firstOrNull { it.index == target.index }?.start ?: return target.surface
+        val end = tokenized.tokens.firstOrNull { it.index == endIndex }?.end ?: return target.surface
+        return text.substring(start, end)
     }
 
     /** Includes a grouped particle so a phrasal verb reaches the model as one unit. */

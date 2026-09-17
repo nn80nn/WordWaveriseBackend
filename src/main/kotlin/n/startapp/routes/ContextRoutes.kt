@@ -17,7 +17,15 @@ data class ContextAnalyzeRequest(
     /** Preferred: refers to the tokenisation the server itself produced. */
     val tokenIndex: Int? = null,
     /** Fallback for callers that only have the word; resolves to its first tappable occurrence. */
-    val token: String? = null
+    val token: String? = null,
+    /**
+     * Last token of a multi-word selection, inclusive. Omitted or equal to [tokenIndex] for a
+     * single word — the ordinary case, and what every client sent before this field existed.
+     * Greater than [tokenIndex] asks for the whole span as a phrase: no dictionary sense is
+     * matched for it (a sense belongs to a word, not to an arbitrary stretch of text), just a
+     * translation of the span in context.
+     */
+    val tokenEnd: Int? = null
 )
 
 fun Route.contextRoutes(service: ContextAnalysisService) {
@@ -40,14 +48,18 @@ fun Route.contextRoutes(service: ContextAnalysisService) {
         post("/hint") {
             val request = call.receive<ContextAnalyzeRequest>()
             call.respond(
-                ApiResponse.success(service.hint(request.text, request.tokenIndex, request.token))
+                ApiResponse.success(
+                    service.hint(request.text, request.tokenIndex, request.token, request.tokenEnd)
+                )
             )
         }
 
         post("/analyze") {
             val request = call.receive<ContextAnalyzeRequest>()
             call.respond(
-                ApiResponse.success(service.analyze(request.text, request.tokenIndex, request.token))
+                ApiResponse.success(
+                    service.analyze(request.text, request.tokenIndex, request.token, request.tokenEnd)
+                )
             )
         }
     }
