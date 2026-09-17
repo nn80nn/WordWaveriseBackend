@@ -1,6 +1,7 @@
 package n.startapp.repositories
 
 import n.startapp.database.DatabaseFactory.dbQuery
+import n.startapp.exceptions.BadRequestException
 import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookChapters
 import n.startapp.database.tables.BookBookmarks
@@ -191,6 +192,17 @@ class BookRepository {
         }
 
         positionOf(userId, bookId, blockCount)
+    }
+
+    /** Renames the book itself. The folder it may have — see [CategoryRepository.renameForBook] — is a separate step. */
+    suspend fun rename(userId: Int, bookId: Int, title: String): BookDTO? = dbQuery {
+        val trimmed = title.trim().take(500)
+        if (trimmed.isEmpty()) throw n.startapp.exceptions.BadRequestException("Пустое название")
+        val row = ownedRow(userId, bookId) ?: return@dbQuery null
+        Books.update({ (Books.id eq bookId) and (Books.userId eq userId) }) {
+            it[Books.title] = trimmed
+        }
+        toDTO(row, positionOf(userId, bookId, row[Books.blockCount])).copy(title = trimmed)
     }
 
     suspend fun delete(userId: Int, bookId: Int): Boolean = dbQuery {

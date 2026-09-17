@@ -133,3 +133,6 @@ data class ImportTextRequest(
 
 @Serializable
 data class SetPositionRequest(val ordinal: Int)
+
+@Serializable
+data class RenameBookRequest(val title: String)

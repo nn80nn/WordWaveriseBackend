@@ -131,6 +131,22 @@ class CategoryRepository {
         )
     }
 
+    /**
+     * Carries a book's new title onto its folder, if one was ever created for it.
+     *
+     * The folder's name is a one-time snapshot of the title at the moment the folder was made
+     * (see [folderForBook]) — nothing keeps them in sync on its own. A rename is the one moment
+     * that *should* propagate: the person just said what the book is called now, for both.
+     * No-op when there is no folder yet — the next save will snapshot the new title itself.
+     */
+    suspend fun renameForBook(userId: Int, bookId: Int, title: String) = dbQuery {
+        val folder = folderRowForBook(userId, bookId) ?: return@dbQuery
+        val name = title.trim().take(MAX_NAME_LENGTH).ifBlank { "Книга" }
+        Categories.update({ Categories.id eq folder[Categories.id] }) {
+            it[Categories.name] = name
+        }
+    }
+
     private fun folderRowForBook(userId: Int, bookId: Int): ResultRow? =
         Categories.selectAll()
             .where { (Categories.userId eq userId) and (Categories.bookId eq bookId) }

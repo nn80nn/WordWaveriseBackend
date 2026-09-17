@@ -15,6 +15,7 @@ import n.startapp.exceptions.NotFoundException
 import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
 import n.startapp.models.reader.ImportTextRequest
+import n.startapp.models.reader.RenameBookRequest
 import n.startapp.models.reader.SetBookmarkRequest
 import n.startapp.models.reader.SetPositionRequest
 import n.startapp.repositories.BookRepository
@@ -105,6 +106,20 @@ fun Route.libraryRoutes(repository: BookRepository, importService: BookImportSer
                 val page = repository.blocks(userId, bookId, from, limit, tokens)
                     ?: throw NotFoundException("Книга не найдена")
                 call.respond(ApiResponse.success(page))
+            }
+
+            /**
+             * Renames the book. If it already has a folder (see `POST /{id}/folder`), the folder's
+             * name is carried along — it was only ever a snapshot of the title at creation time.
+             */
+            put("/{id}") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                val request = call.receive<RenameBookRequest>()
+                val book = repository.rename(userId, bookId, request.title)
+                    ?: throw NotFoundException("Книга не найдена")
+                categories.renameForBook(userId, bookId, request.title)
+                call.respond(ApiResponse.success(book))
             }
 
             /**
