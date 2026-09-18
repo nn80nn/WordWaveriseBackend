@@ -12,6 +12,7 @@ import n.startapp.services.ai.LlmClient
 import n.startapp.services.ai.LlmJson
 import n.startapp.services.ai.LlmModelTier
 import n.startapp.services.ai.LlmRequest
+import n.startapp.services.ai.LlmRoute
 import n.startapp.services.ai.ResponseFormat
 import org.slf4j.LoggerFactory
 
@@ -299,7 +300,21 @@ class ContextAnalysisService(
      * the provider is busy the reader is left with the full analysis, which the client offers as
      * a deliberate second step rather than as a wait nobody asked for.
      */
-    suspend fun hint(text: String, tokenIndex: Int?, token: String?, tokenEnd: Int? = null): ContextHint {
+    suspend fun hint(
+        text: String,
+        tokenIndex: Int?,
+        token: String?,
+        tokenEnd: Int? = null,
+        /**
+         * Которым провайдером идёт LLM-вызов при промахе кэша.
+         *
+         * По умолчанию LIVE — тап живого читателя. Прогрев книги офлайн передаёт BULK: это тот же
+         * резервный пул, что уже несёт прогрев корпуса, и та же причина — фоновая пачка из тысяч
+         * вызовов не должна спорить за квоту с тем, кто сейчас ждёт ответа. Ключ кэша от роута не
+         * зависит, поэтому прогретое офлайн мгновенно отвечает и живому тапу той же строки.
+         */
+        route: LlmRoute = LlmRoute.LIVE
+    ): ContextHint {
         if (text.isBlank()) throw BadRequestException("Field 'text' cannot be empty")
 
         val tokenized = Tokenizer.tokenize(text)
@@ -321,6 +336,7 @@ class ContextAnalysisService(
                     tier = LlmModelTier.DRAFT,
                     maxTokens = 120,
                     temperature = 0.1,
+                    route = route,
                     responseFormat = ResponseFormat.JsonObject,
                     maxRetries = 0
                 )

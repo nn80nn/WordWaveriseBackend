@@ -143,7 +143,7 @@ fun Application.configureRouting(services: ServiceRegistry) {
 
         // The reader's library. A tap inside a book goes to contextRoutes above — the reader
         // brings the text, the dictionary already knows how to explain one word inside it.
-        libraryRoutes(services.bookRepository, services.bookImportService)
+        libraryRoutes(services.bookRepository, services.bookImportService, services.bookOfflineService)
 
         // Cache management endpoints
         route("/api/cache") {

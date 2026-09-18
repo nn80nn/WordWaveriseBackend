@@ -15,12 +15,15 @@ import n.startapp.exceptions.NotFoundException
 import n.startapp.exceptions.UnauthorizedException
 import n.startapp.models.ApiResponse
 import n.startapp.models.reader.ImportTextRequest
+import n.startapp.models.reader.OfflineStatusDto
 import n.startapp.models.reader.RenameBookRequest
 import n.startapp.models.reader.SetBookmarkRequest
 import n.startapp.models.reader.SetPositionRequest
 import n.startapp.repositories.BookRepository
 import n.startapp.repositories.CategoryRepository
 import n.startapp.services.reader.BookImportService
+import n.startapp.services.reader.BookOfflineService
+import n.startapp.utils.EnvConfig
 
 /**
  * The reader's library: import, open, page, remember where you were.
@@ -29,7 +32,11 @@ import n.startapp.services.reader.BookImportService
  * and no sharing — a book here is text somebody uploaded, and the safe default for that is that
  * nobody else can reach it.
  */
-fun Route.libraryRoutes(repository: BookRepository, importService: BookImportService) {
+fun Route.libraryRoutes(
+    repository: BookRepository,
+    importService: BookImportService,
+    offlineService: BookOfflineService
+) {
     val categories = CategoryRepository()
 
     authenticate("auth-jwt") {
@@ -167,6 +174,48 @@ fun Route.libraryRoutes(repository: BookRepository, importService: BookImportSer
             }
 
             /**
+             * Ставит книгу на прогрев для офлайн-чтения — только Android, и только тап без сети.
+             *
+             * Идемпотентно на уже идущий джоб: второй `POST` во время прогрева не заводит второй,
+             * а просто возвращает тот же статус — ту же кнопку можно нажимать сколько угодно раз.
+             * Дневной лимит считается **читателем**, а не книгой: сам прогрев ничего не знает о
+             * том, кто его попросил, и может уже быть тёплым от другого читателя той же книги.
+             */
+            post("/{id}/offline/start") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                if (repository.detail(userId, bookId) == null) throw NotFoundException("Книга не найдена")
+
+                val allowed = repository.registerOfflineDownload(userId, bookId, EnvConfig.bookOfflineDailyLimit)
+                if (!allowed) {
+                    // ⚠️ Код, а не фраза — тем же приёмом, что `book_limit_reached`: клиент
+                    // матчится на строку и показывает свой русский текст для неё.
+                    throw BadRequestException("offline_daily_limit_reached")
+                }
+
+                if (!offlineService.start(bookId)) throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(offlineStatus(repository, offlineService, userId, bookId)))
+            }
+
+            get("/{id}/offline/status") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                if (repository.detail(userId, bookId) == null) throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(offlineStatus(repository, offlineService, userId, bookId)))
+            }
+
+            /** Готовые подсказки, окном блоков — тем же контрактом, что `/blocks`. */
+            get("/{id}/offline/bundle") {
+                val userId = readerId(call)
+                val bookId = bookId(call)
+                if (repository.detail(userId, bookId) == null) throw NotFoundException("Книга не найдена")
+                val from = call.request.queryParameters["from"]?.toIntOrNull() ?: 0
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 40
+                val page = offlineService.bundle(bookId, from, limit) ?: throw NotFoundException("Книга не найдена")
+                call.respond(ApiResponse.success(page))
+            }
+
+            /**
              * Закладки — «сюда я хочу вернуться», в отличие от позиции, которая отвечает
              * «где я сейчас». Их сколько угодно, и переписывать друг друга они не должны.
              */
@@ -206,6 +255,30 @@ fun Route.libraryRoutes(repository: BookRepository, importService: BookImportSer
             }
         }
     }
+}
+
+/**
+ * Merges the job's own numbers (per book, no notion of who is asking) with this reader's daily
+ * quota (per reader, no notion of which book) into the one answer the client actually needs.
+ */
+private suspend fun offlineStatus(
+    repository: BookRepository,
+    offlineService: BookOfflineService,
+    userId: Int,
+    bookId: Int
+): OfflineStatusDto {
+    val snapshot = offlineService.status(bookId)
+    return OfflineStatusDto(
+        bookId = bookId,
+        running = snapshot?.running ?: false,
+        totalTokens = snapshot?.totalTokens ?: 0,
+        processedTokens = snapshot?.processedTokens ?: 0,
+        failed = snapshot?.failed ?: 0,
+        startedAt = snapshot?.startedAt,
+        finishedAt = snapshot?.finishedAt,
+        downloadsToday = repository.offlineDownloadsToday(userId),
+        downloadsPerDay = EnvConfig.bookOfflineDailyLimit
+    )
 }
 
 private fun readerId(call: ApplicationCall): Int =

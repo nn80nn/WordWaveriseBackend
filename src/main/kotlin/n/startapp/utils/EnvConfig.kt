@@ -145,6 +145,14 @@ object EnvConfig {
     /** 0 = the whole list. Set lower to try a slice first. */
     val warmupLimit: Int get() = getInt("WARMUP_LIMIT", 0)
 
+    // ── Офлайн-книги (только Android) ───────────────────────────────────────
+    /** Сколько книг разрешено держать на полке одновременно — дальше надо удалять старые. */
+    val bookLibraryLimit: Int get() = getInt("BOOK_LIBRARY_LIMIT", 40)
+    /** Сколько *новых* книг в сутки можно поставить на офлайн-скачивание — одна книга это тысячи вызовов модели. */
+    val bookOfflineDailyLimit: Int get() = getInt("BOOK_OFFLINE_DAILY_LIMIT", 2)
+    /** Параллельных подсказок в разогреве одновременно — вежливо к пулу, но не черепашьим шагом. */
+    val bookOfflineConcurrency: Int get() = getInt("BOOK_OFFLINE_CONCURRENCY", 4)
+
     /**
      * Strongest response constraint to attempt: json_schema | json_object | none.
      * Downgraded automatically if the provider rejects it.

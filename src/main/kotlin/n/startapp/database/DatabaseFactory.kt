@@ -9,6 +9,7 @@ import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookBookmarks
 import n.startapp.database.tables.BookChapters
 import n.startapp.database.tables.Books
+import n.startapp.database.tables.BookOfflineDownloads
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ContentReports
 import n.startapp.database.tables.Flashcards
@@ -50,7 +51,7 @@ object DatabaseFactory {
         LlmCache, LexicalEntries, AppSettings, WarmupQueue, PushSubscriptions,
         StudyGroups, StudyGroupMembers, StudyGroupFolders, Assignments, PracticeAttempts,
         ContentReports,
-        Books, BookChapters, BookBlocks, ReadingPositions, BookBookmarks
+        Books, BookChapters, BookBlocks, ReadingPositions, BookBookmarks, BookOfflineDownloads
     )
 
     fun init() {

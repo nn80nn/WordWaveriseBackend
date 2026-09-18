@@ -76,6 +76,11 @@ class ServiceRegistry {
     val bookRepository = BookRepository()
     val bookImportService = BookImportService(bookRepository)
 
+    /** Warms a book's tap targets ahead of an offline download — see the class doc for why. */
+    val bookOfflineService = n.startapp.services.reader.BookOfflineService(
+        bookRepository, contextAnalysisService, llmCacheRepository
+    )
+
     val lookupService = LookupService(
         aggregationService = aggregationService,
         annotationService = annotationService,
@@ -143,6 +148,7 @@ class ServiceRegistry {
         runCatching { pronunciationSweepService.close() }
             .onFailure { logger.warn("pronunciationSweepService.close(): ${it.message}") }
         runCatching { warmupService.close() }.onFailure { logger.warn("warmupService.close(): ${it.message}") }
+        runCatching { bookOfflineService.close() }.onFailure { logger.warn("bookOfflineService.close(): ${it.message}") }
         runCatching { lookupService.close() }.onFailure { logger.warn("lookupService.close(): ${it.message}") }
         runCatching { aggregationService.close() }.onFailure { logger.warn("aggregationService.close(): ${it.message}") }
         runCatching { dictionaryService.close() }.onFailure { logger.warn("dictionaryService.close(): ${it.message}") }

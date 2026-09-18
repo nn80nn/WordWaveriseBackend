@@ -5,6 +5,7 @@ import n.startapp.exceptions.BadRequestException
 import n.startapp.database.tables.BookBlocks
 import n.startapp.database.tables.BookChapters
 import n.startapp.database.tables.BookBookmarks
+import n.startapp.database.tables.BookOfflineDownloads
 import n.startapp.database.tables.Books
 import n.startapp.database.tables.Categories
 import n.startapp.database.tables.ReadingPositions
@@ -138,6 +139,11 @@ class BookRepository {
             .map { row -> toDTO(row, positionOf(userId, row[Books.id], row[Books.blockCount])) }
     }
 
+    /** How many books this reader already has — the gate before another import. */
+    suspend fun countFor(userId: Int): Int = dbQuery {
+        Books.selectAll().where { Books.userId eq userId }.count().toInt()
+    }
+
     suspend fun detail(userId: Int, bookId: Int): BookDetailDTO? = dbQuery {
         val row = ownedRow(userId, bookId) ?: return@dbQuery null
         val chapters = BookChapters.selectAll()
@@ -190,6 +196,68 @@ class BookRepository {
         )
     }
 
+    /**
+     * The same window [blocks] returns, without the ownership check.
+     *
+     * For the offline warm-up job and the bundle it hands back to the client: both run after
+     * ownership was already confirmed once, at the `/offline/start` call that launched them, and
+     * asking again on every one of a book's thousand blocks would be the same query paid twice.
+     */
+    suspend fun blocksNoOwnerCheck(bookId: Int, from: Int, limit: Int): BlockPageDTO? = dbQuery {
+        val blockCount = Books.selectAll().where { Books.id eq bookId }
+            .limit(1).firstOrNull()?.get(Books.blockCount) ?: return@dbQuery null
+        val size = limit.coerceIn(1, maxPageSize)
+        val start = from.coerceAtLeast(0)
+
+        val blocks = BookBlocks.selectAll()
+            .where { (BookBlocks.bookId eq bookId) and (BookBlocks.ordinal greaterEq start) }
+            .orderBy(BookBlocks.ordinal to SortOrder.ASC)
+            .limit(size)
+            .map { toBlockDTO(it, withTokens = true) }
+
+        val last = blocks.lastOrNull()?.ordinal
+        BlockPageDTO(
+            bookId = bookId,
+            from = start,
+            blocks = blocks,
+            nextOrdinal = if (last != null && last + 1 < blockCount) last + 1 else null
+        )
+    }
+
+    /**
+     * Registers today's offline-download request for this book, unless the daily cap is already
+     * spent on *other* books — resuming or re-downloading the same one is free, since the unique
+     * index makes a repeat request a no-op rather than a second row.
+     *
+     * @return false when the cap is spent and this book is not among today's already-counted ones.
+     */
+    suspend fun registerOfflineDownload(userId: Int, bookId: Int, maxPerDay: Int): Boolean = dbQuery {
+        val today = todayUtc()
+        val already = BookOfflineDownloads.selectAll()
+            .where { (BookOfflineDownloads.userId eq userId) and (BookOfflineDownloads.day eq today) }
+            .map { it[BookOfflineDownloads.bookId] }
+            .distinct()
+        if (bookId in already) return@dbQuery true
+        if (already.size >= maxPerDay) return@dbQuery false
+        BookOfflineDownloads.insert {
+            it[BookOfflineDownloads.userId] = userId
+            it[BookOfflineDownloads.bookId] = bookId
+            it[BookOfflineDownloads.day] = today
+        }
+        true
+    }
+
+    suspend fun offlineDownloadsToday(userId: Int): Int = dbQuery {
+        val today = todayUtc()
+        BookOfflineDownloads.selectAll()
+            .where { (BookOfflineDownloads.userId eq userId) and (BookOfflineDownloads.day eq today) }
+            .map { it[BookOfflineDownloads.bookId] }
+            .distinct()
+            .size
+    }
+
+    private fun todayUtc(): String = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString()
+
     suspend fun setPosition(userId: Int, bookId: Int, ordinal: Int): ReadingPositionDTO? = dbQuery {
         val row = ownedRow(userId, bookId) ?: return@dbQuery null
         val blockCount = row[Books.blockCount]
@@ -238,6 +306,7 @@ class BookRepository {
         // that already exists without one, so a database older than this file would refuse.
         ReadingPositions.deleteWhere { ReadingPositions.bookId eq bookId }
         BookBookmarks.deleteWhere { BookBookmarks.bookId eq bookId }
+        BookOfflineDownloads.deleteWhere { BookOfflineDownloads.bookId eq bookId }
         BookBlocks.deleteWhere { BookBlocks.bookId eq bookId }
         BookChapters.deleteWhere { BookChapters.bookId eq bookId }
         // ⚠️ The book's folder outlives the book, together with the words in it: those belong to
@@ -317,6 +386,7 @@ class BookRepository {
         val ids = Books.selectAll().where { Books.userId eq userId }.map { it[Books.id] }
         ReadingPositions.deleteWhere { ReadingPositions.userId eq userId }
         BookBookmarks.deleteWhere { BookBookmarks.userId eq userId }
+        BookOfflineDownloads.deleteWhere { BookOfflineDownloads.userId eq userId }
         for (bookId in ids) {
             ReadingPositions.deleteWhere { ReadingPositions.bookId eq bookId }
             BookBlocks.deleteWhere { BookBlocks.bookId eq bookId }

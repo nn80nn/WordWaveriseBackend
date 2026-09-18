@@ -67,6 +67,14 @@ class BookImportService(private val repository: BookRepository) {
             return ImportResultDTO(book = it, alreadyExisted = true)
         }
 
+        // ⚠️ A code, not a phrase — the client matches on this exact string and shows its own
+        // Russian text for it (see `google_reauth_required` for the same convention). A shelf
+        // with no ceiling is a shelf whose offline warm-up job never ends: each book can cost
+        // thousands of model calls, and forty is enough for any real library.
+        if (repository.countFor(userId) >= n.startapp.utils.EnvConfig.bookLibraryLimit) {
+            throw BadRequestException("book_limit_reached")
+        }
+
         return ImportResultDTO(
             book = repository.insert(userId, parsed, hash),
             alreadyExisted = false

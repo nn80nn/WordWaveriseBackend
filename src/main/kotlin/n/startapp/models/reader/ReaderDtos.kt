@@ -144,3 +144,66 @@ data class SetPositionRequest(val ordinal: Int)
 
 @Serializable
 data class RenameBookRequest(val title: String)
+
+// ── Офлайн (только Android) ──────────────────────────────────────────────
+
+/**
+ * Прогресс разогрева книги для тапа без сети.
+ *
+ * [running] отвечает за то, продолжать ли опрос; числа ниже — за то, что показать пока ждут.
+ * Джоб живёт на сервере и не знает о пользователе — прогревает книгу целиком независимо от
+ * того, кто и сколько раз её попросил, — поэтому [downloadsToday]/[downloadsPerDay] пристёгнуты
+ * маршрутом отдельно: это про читателя, а не про книгу.
+ */
+@Serializable
+data class OfflineStatusDto(
+    val bookId: Int,
+    val running: Boolean,
+    val totalTokens: Int = 0,
+    val processedTokens: Int = 0,
+    val failed: Int = 0,
+    val startedAt: Long? = null,
+    val finishedAt: Long? = null,
+    val downloadsToday: Int = 0,
+    val downloadsPerDay: Int = 0
+)
+
+/**
+ * Подсказка одного слова, готовая к тапу без сети — то же самое, что
+ * [n.startapp.services.context.ContextHint], но адресованное местом в книге, а не предложением:
+ * клиент хранит их пачкой и ищет по (абзац, предложение, токен), а не пересылает текст обратно.
+ */
+@Serializable
+data class OfflineHintDto(
+    val blockOrdinal: Int,
+    val sentenceIndex: Int,
+    val tokenIndex: Int,
+    val lemma: String? = null,
+    val pos: String? = null,
+    val translationRu: String? = null,
+    val senseId: String? = null,
+    val senseMatched: Boolean = false,
+    val senseDefinitionEn: String? = null,
+    val phonetic: String? = null,
+    val audioUrl: String? = null,
+    val translationsRu: List<String> = emptyList(),
+    val cefr: String? = null,
+    val register: String? = null,
+    val countability: String? = null,
+    val entryAvailable: Boolean = false
+)
+
+/**
+ * Окно подсказок, страницей блоков — тем же контрактом, что [BlockPageDTO]: `from`/`nextOrdinal`
+ * по ordinal-у блока, чтобы клиент листал оба окна одним и тем же циклом.
+ *
+ * ⚠️ Слово, для которого прогрев ещё не дошёл, просто отсутствует в [hints] — не placeholder и не
+ * ошибка. Экран говорит об этом словами («недоступно офлайн»), когда тап не находит запись.
+ */
+@Serializable
+data class OfflineBundlePageDto(
+    val bookId: Int,
+    val from: Int,
+    val hints: List<OfflineHintDto> = emptyList(),
+    val nextOrdinal: Int? = null
+)
